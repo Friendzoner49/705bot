@@ -70,7 +70,30 @@ sở dữ liệu.
 | Đọc hóa đơn bằng AI | [Ollama](https://ollama.com) + `qwen2.5vl:7b` (chạy cục bộ) |
 | Đóng gói | PyInstaller (Windows/macOS) |
 
-## Bắt đầu nhanh
+## Tải và sử dụng app (không cần biết lập trình)
+
+1. Vào mục [Releases](https://github.com/Friendzoner49/705bot/releases) của
+   repo này, tải bản đóng gói sẵn mới nhất cho Windows
+   (`BachHoa705-windows.zip`) hoặc macOS (`.dmg`) — không cần cài Python/uv.
+2. Windows: giải nén rồi chạy `BachHoa705.exe`. macOS: mở file `.dmg`, kéo
+   app vào Applications (lần đầu mở sẽ bị chặn vì chưa notarize — vào Cài
+   đặt hệ thống → Quyền riêng tư & Bảo mật → "Vẫn mở").
+3. Lần đầu mở, app tự tạo 1 cơ sở dữ liệu **rỗng** trên máy bạn — không đụng
+   gì đến dữ liệu thật của cửa hàng gốc. Nhập danh mục của riêng bạn bằng nút
+   "Nhập danh mục từ Excel…" (tab Danh mục hàng), hoặc dùng thử ngay với
+   `docs/sample_data/demo_catalog.xlsx` (dữ liệu hoàn toàn hư cấu).
+4. Hướng dẫn dùng từng tab trong app (thêm khách hàng, tạo hóa đơn, xem công
+   nợ/lợi nhuận, sao lưu…): xem
+   [`docs/HUONG_DAN_SU_DUNG.md`](docs/HUONG_DAN_SU_DUNG.md).
+
+App chạy **độc lập**, không cần kết nối gì để dùng phần quản lý giá
+vốn/khách hàng/hóa đơn trên máy bạn. Muốn dùng thêm **website công khai**
+hoặc **bot Telegram nhận đơn** như bản demo đang chạy thật (cần tài khoản
+Cloudflare/GitHub Pages riêng, xem [`bot/README.md`](bot/README.md) để tự
+triển khai), nhắn tin cho **[@BachHoa705_bot](https://t.me/BachHoa705_bot)**
+trên Telegram để được hỗ trợ kết nối.
+
+## Bắt đầu nhanh (cho người muốn đọc/sửa code)
 
 ```bash
 git clone https://github.com/Friendzoner49/705bot.git

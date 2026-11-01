@@ -72,7 +72,34 @@ bot only **read** the published public price feed
 | Invoice-photo reading | [Ollama](https://ollama.com) + `qwen2.5vl:7b` (runs locally) |
 | Packaging | PyInstaller (Windows/macOS) |
 
-## Quick start
+## Download and use the app (no coding required)
+
+1. Grab the latest packaged build from this repo's
+   [Releases](https://github.com/Friendzoner49/705bot/releases) page —
+   `BachHoa705-windows.zip` for Windows or the `.dmg` for macOS. No
+   Python/uv install needed.
+2. Windows: unzip and run `BachHoa705.exe`. macOS: open the `.dmg` and drag
+   the app into Applications (the first launch will be blocked since it
+   isn't notarized — go to System Settings → Privacy & Security → "Open
+   Anyway").
+3. On first launch the app creates an **empty** database on your own
+   machine — it never touches the original shop's real data. Import your
+   own catalog via "Nhập danh mục từ Excel…" (Catalog tab), or try it
+   instantly with `docs/sample_data/demo_catalog.xlsx` (entirely fictional
+   data).
+4. For a full walkthrough of every tab (customers, invoices, debt/profit,
+   backups…), see [`docs/HUONG_DAN_SU_DUNG.md`](docs/HUONG_DAN_SU_DUNG.md)
+   (Vietnamese only for now).
+
+The app runs **standalone** — no network connection needed for the
+catalog/customer/invoice management on your own machine. If you'd also like
+the **public website** or the **Telegram ordering bot**, like the live demo
+this project runs (you'd need your own Cloudflare/GitHub Pages accounts —
+see [`bot/README.md`](bot/README.md) to self-host), message
+**[@BachHoa705_bot](https://t.me/BachHoa705_bot)** on Telegram for help
+connecting.
+
+## Quick start (for reading/modifying the code)
 
 ```bash
 git clone https://github.com/Friendzoner49/705bot.git
