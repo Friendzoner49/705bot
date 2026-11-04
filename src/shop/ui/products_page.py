@@ -20,6 +20,7 @@ from shop.core.products import (
     list_categories,
     list_products,
     set_active,
+    set_description,
     set_image_filename,
     set_in_stock,
     set_sale_until,
@@ -30,7 +31,7 @@ from shop.paths import bot_sync_settings, site_repo_dir
 from shop.tools.import_xlsx import import_catalog
 from shop.tools.publish_site import publish as publish_site
 from shop.ui.dialogs import ProductDialog
-from shop.ui.local_image import LocalImageError, apply_local_image
+from shop.ui.local_image import LocalImageError, apply_gallery_photo, apply_local_image, remove_gallery_photo
 
 HEADERS = ["Mã hàng", "Tên mặt hàng", "Đơn vị", "Nhóm hàng", "Giá vốn", "SL sỉ", "Hạn bán", "Tình trạng"]
 
@@ -62,6 +63,10 @@ class ProductsPage(QWidget):
         self.table.setHorizontalHeaderLabels(HEADERS)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        # Bấm đúp 1 dòng mở chi tiết mặt hàng (request 03/11/2026) -- để
+        # kiểm thử/đối chiếu tên tiếng Nga trước khi hàng về, không cần
+        # chọn dòng rồi bấm "Sửa" riêng.
+        self.table.itemDoubleClicked.connect(lambda _item: self.edit_product())
 
         add_btn = QPushButton("Thêm mặt hàng")
         add_btn.clicked.connect(self.add_product)
@@ -163,6 +168,17 @@ class ProductsPage(QWidget):
         elif dialog.image_removed():
             set_image_filename(self.conn, code, None)
 
+    def _apply_dialog_gallery(self, dialog: ProductDialog, code: str) -> None:
+        """Save/remove "Quà tặng" gallery photos after the row itself
+        exists -- same deferred-apply reasoning as _apply_dialog_image."""
+        for filename in dialog.gallery_removals():
+            remove_gallery_photo(self.conn, code, filename)
+        for path in dialog.gallery_additions():
+            try:
+                apply_gallery_photo(self.conn, code, path)
+            except LocalImageError as exc:
+                QMessageBox.warning(self, "Không lưu được ảnh", str(exc))
+
     def add_product(self):
         dialog = ProductDialog(self, categories=list_categories(self.conn))
         if dialog.exec():
@@ -175,7 +191,9 @@ class ProductsPage(QWidget):
                 return
             upsert_product(self.conn, **values)
             set_sale_until(self.conn, values["code"], dialog.sale_until_value())
+            set_description(self.conn, values["code"], dialog.description_value())
             self._apply_dialog_image(dialog, values["code"])
+            self._apply_dialog_gallery(dialog, values["code"])
             self.refresh()
 
     def edit_product(self):
@@ -194,7 +212,9 @@ class ProductsPage(QWidget):
             values["in_stock"] = product["in_stock"]
             upsert_product(self.conn, **values)
             set_sale_until(self.conn, code, dialog.sale_until_value())
+            set_description(self.conn, code, dialog.description_value())
             self._apply_dialog_image(dialog, code)
+            self._apply_dialog_gallery(dialog, code)
             self.refresh()
 
     def _sync_status_combo(self):

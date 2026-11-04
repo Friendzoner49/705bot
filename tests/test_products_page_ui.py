@@ -3,7 +3,8 @@ shop.core.products.set_active, which other tests already cover) -- same
 reasoning as test_supplier_invoices_ui.py for its sibling dialogs."""
 from PySide6.QtWidgets import QMessageBox
 
-from shop.core.products import upsert_product
+from shop.core.products import get_product, upsert_product
+from shop.ui.dialogs import ProductDialog
 from shop.ui.products_page import ProductsPage
 
 
@@ -92,3 +93,23 @@ def test_apply_status_tam_het_hang_does_not_affect_active(qapp, conn):
     page.status_combo.setCurrentText("Đang bán")
     page.apply_status()
     assert page.table.item(0, 7).text() == "Còn hàng"
+
+
+def test_double_clicking_a_row_opens_the_edit_dialog_with_name_ru_field(qapp, conn, monkeypatch):
+    """Request 03/11/2026: check tên tiếng Nga against a supplier invoice
+    photo before next week's delivery -- double-clicking any row must open
+    the same detail/edit dialog "Sửa" uses, already showing the field."""
+    _seed(conn, "A1", active=True)
+
+    def _accept_and_fill_name_ru(self):
+        assert self.name_ru_edit.text() == ""  # defaults blank until filled in via orders
+        self.name_ru_edit.setText("Рис Жасмин")
+        return True
+
+    monkeypatch.setattr(ProductDialog, "exec", _accept_and_fill_name_ru)
+
+    page = ProductsPage(conn)
+    page.table.selectRow(0)
+    page.table.itemDoubleClicked.emit(page.table.item(0, 0))
+
+    assert get_product(conn, "A1")["name_ru"] == "Рис Жасмин"

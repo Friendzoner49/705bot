@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from shop.core.pricing import PUBLIC_MARKUP_PCT, bulk_price, unit_price
-from shop.core.products import list_products
+from shop.core.products import gallery_list, list_products
 from shop.db.migrate import connect
 from shop.paths import repo_root, site_repo_dir
 
@@ -53,6 +53,22 @@ def build_payload(conn: sqlite3.Connection) -> dict:
         image = _image_ref(images_dir, p["image_filename"])
         if image:
             entry["image"] = image
+        # "Quà tặng" items only (lần 38) -- extra photo angles + a long
+        # description. Omitted entirely for the other 146 ordinary
+        # products, so their JSON entries stay byte-identical to before.
+        gallery = gallery_list(p)
+        if gallery:
+            all_refs = [image] + [_image_ref(images_dir, f) for f in gallery]
+            seen = set()
+            images_out = []
+            for ref in all_refs:
+                if ref and ref not in seen:
+                    seen.add(ref)
+                    images_out.append(ref)
+            if images_out:
+                entry["images"] = images_out
+        if p["description"]:
+            entry["description"] = p["description"]
         if not p["in_stock"]:
             entry["in_stock"] = False
         if p["sale_until"]:

@@ -8,14 +8,25 @@ unlike Pillow -- see pyproject.toml's note on why Pillow stays dev-only.
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QImage
+from PySide6.QtGui import QImage, QImageReader
 
 from shop.core.product_images import MAX_LONG_SIDE, MIN_SHORT_SIDE, record_image
+from shop.core.products import gallery_list, set_gallery_filenames
 from shop.paths import site_repo_dir
 
 
 class LocalImageError(Exception):
     pass
+
+
+def _read_oriented(source_path: Path) -> QImage:
+    """QImage(path) ignores EXIF orientation -- a camera photo (e.g. an
+    iPhone JPG, "chụp dọc" flagged via EXIF rather than physically
+    rotated pixels) would silently come out sideways. QImageReader with
+    autoTransform applies that rotation before any further processing."""
+    reader = QImageReader(str(source_path))
+    reader.setAutoTransform(True)
+    return reader.read()
 
 
 def apply_local_image(conn, code: str, source_path: Path) -> str:
@@ -25,7 +36,7 @@ def apply_local_image(conn, code: str, source_path: Path) -> str:
     product's image_filename at it. Returns the filename. Raises
     LocalImageError (Vietnamese message, shown directly in a dialog) on
     anything that makes the image unusable."""
-    img = QImage(str(source_path))
+    img = _read_oriented(source_path)
     if img.isNull():
         raise LocalImageError("Không đọc được file ảnh này -- có thể file bị hỏng hoặc không đúng định dạng ảnh.")
 
@@ -46,3 +57,55 @@ def apply_local_image(conn, code: str, source_path: Path) -> str:
 
     record_image(conn, images_dir, code, filename, (img.width(), img.height()), source_url=f"Chọn từ máy: {source_path.name}")
     return filename
+
+
+def apply_gallery_photo(conn, code: str, source_path: Path) -> str:
+    """Same validate/resize/save as apply_local_image, but appends to
+    the product's gallery (products.gallery_filenames) instead of
+    replacing the single cover photo -- for "Quà tặng" items that need
+    every angle visible (lần 38), not the 1-photo-per-product norm.
+    Filename pattern "{code}-g{n}.jpg", n = 1-based, next free slot."""
+    img = _read_oriented(source_path)
+    if img.isNull():
+        raise LocalImageError("Không đọc được file ảnh này -- có thể file bị hỏng hoặc không đúng định dạng ảnh.")
+
+    w, h = img.width(), img.height()
+    if min(w, h) < MIN_SHORT_SIDE:
+        raise LocalImageError(f"Ảnh quá nhỏ ({w}x{h}px) -- cạnh ngắn cần tối thiểu {MIN_SHORT_SIDE}px để hiển thị rõ trên website.")
+
+    if max(w, h) > MAX_LONG_SIDE:
+        img = img.scaled(
+            MAX_LONG_SIDE, MAX_LONG_SIDE, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
+        )
+
+    images_dir = site_repo_dir() / "images"
+    images_dir.mkdir(parents=True, exist_ok=True)
+
+    from shop.core.products import get_product
+
+    existing = gallery_list(get_product(conn, code))
+    next_n = len(existing) + 1
+    filename = f"{code}-g{next_n}.jpg"
+    while (images_dir / filename).exists():
+        next_n += 1
+        filename = f"{code}-g{next_n}.jpg"
+
+    if not img.convertToFormat(QImage.Format.Format_RGB32).save(str(images_dir / filename), "JPG", quality=88):
+        raise LocalImageError("Lưu ảnh thất bại -- thử lại hoặc chọn file khác.")
+
+    set_gallery_filenames(conn, code, existing + [filename])
+    return filename
+
+
+def remove_gallery_photo(conn, code: str, filename: str) -> None:
+    from shop.core.products import get_product
+
+    existing = gallery_list(get_product(conn, code))
+    if filename not in existing:
+        return
+    set_gallery_filenames(conn, code, [f for f in existing if f != filename])
+    path = site_repo_dir() / "images" / filename
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass  # best-effort -- a locked/missing file must not block removing the DB reference

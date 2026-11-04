@@ -3,8 +3,8 @@ through the connection each page already has, never imports sqlite
 details itself beyond what core functions need."""
 from pathlib import Path
 
-from PySide6.QtCore import QDate, Qt
-from PySide6.QtGui import QPixmap
+from PySide6.QtCore import QDate, QSize, Qt
+from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -20,18 +20,20 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
     QVBoxLayout,
 )
 
+from shop.core.products import gallery_list
 from shop.paths import site_repo_dir
 
 # Nhóm hàng chưa có mặt hàng nào vẫn phải hiện trong combo (lần 19,
-# request #5) -- list_categories() chỉ trả nhóm ĐANG dùng, nên "Rượu"
-# (sắp bán làm quà, chưa có sản phẩm nào) sẽ không tự xuất hiện nếu
-# không liệt kê tay ở đây. Thêm nhóm mới vào đây khi cần chuẩn bị
-# trước, không cần tạo sản phẩm giả.
-_KNOWN_EMPTY_CATEGORIES = ["Rượu"]
+# request #5) -- list_categories() chỉ trả nhóm ĐANG dùng, nên "Quà
+# tặng" (vd Beluga vodka, lần 38) sẽ không tự xuất hiện nếu không liệt
+# kê tay ở đây. Thêm nhóm mới vào đây khi cần chuẩn bị trước, không cần
+# tạo sản phẩm giả.
+_KNOWN_EMPTY_CATEGORIES = ["Quà tặng"]
 
 
 class ProductDialog(QDialog):
@@ -77,6 +79,22 @@ class ProductDialog(QDialog):
         # là con số duy nhất pricing.bulk_discount() dùng.
         self.bulk_unit_edit = QLineEdit(product.get("bulk_unit", "") if product else "")
         self.bulk_unit_edit.setPlaceholderText("vd: thùng, túi, bao, kiện...")
+        # Tên tiếng Nga chính thức của mặt hàng (request 03/11/2026) -- để
+        # đối chiếu với "Tên tiếng Nga (AI đọc)" của từng dòng hóa đơn NCC
+        # khi hàng về. Mặc định rỗng, điền dần qua các đợt -- KHÔNG BAO GIỜ
+        # xuất ra website (xem shop.tools.export_public.build_payload).
+        self.name_ru_edit = QLineEdit(product.get("name_ru", "") if product else "")
+        self.name_ru_edit.setPlaceholderText("Chỉ hiện trong app -- không bao giờ lên website")
+
+        # Mô tả chi tiết (lần 38, "Quà tặng") -- chỉ dành cho mặt hàng
+        # cần giới thiệu dài hơn 1 dòng tên (vd rượu quà tặng). Rỗng =
+        # không hiện khối mô tả trên website/app, không ảnh hưởng 146
+        # mặt hàng tạp hóa thường.
+        self.description_edit = QPlainTextEdit(product.get("description", "") if product else "")
+        self.description_edit.setPlaceholderText(
+            "Chỉ cần cho mặt hàng đặc biệt (vd quà tặng) -- để trống nếu không cần giới thiệu dài."
+        )
+        self.description_edit.setFixedHeight(84)
 
         # Image: a new file picked this session (self._picked_path, None
         # until the user chooses one -- the dialog only previews it, the
@@ -132,6 +150,33 @@ class ProductDialog(QDialog):
         image_row.addLayout(image_buttons)
         image_row.addStretch()
 
+        # Bộ sưu tập ảnh (lần 38, "Quà tặng") -- NHIỀU ảnh/góc chụp cho 1
+        # mặt hàng, khác với "Ảnh sản phẩm" phía trên (1 ảnh đại diện,
+        # dùng cho thẻ sản phẩm/đăng kênh). Thêm/xóa chỉ thật sự ghi vào
+        # images/ + products.gallery_filenames SAU khi mã hàng đã tồn tại
+        # (giống hệt lý do image_row hoãn ghi -- xem _apply_dialog_image),
+        # nên ở đây chỉ gom lại "sẽ thêm"/"sẽ xóa", caller áp dụng sau Ok.
+        self._gallery_existing: list[str] = gallery_list(product) if product else []
+        self._gallery_pending_add: list[Path] = []
+        self._gallery_pending_remove: list[str] = []
+
+        self.gallery_list_widget = QListWidget()
+        self.gallery_list_widget.setViewMode(QListWidget.ViewMode.IconMode)
+        self.gallery_list_widget.setIconSize(QSize(72, 72))
+        self.gallery_list_widget.setFixedHeight(100)
+        self.gallery_list_widget.setResizeMode(QListWidget.ResizeMode.Adjust)
+        self._refresh_gallery_widget()
+
+        gallery_add_btn = QPushButton("Thêm ảnh vào bộ sưu tập…")
+        gallery_add_btn.setToolTip("Chọn nhiều ảnh cùng lúc -- khách xem được hết các góc chụp khi bấm vào mặt hàng.")
+        gallery_add_btn.clicked.connect(self._pick_gallery_images)
+        gallery_remove_btn = QPushButton("Xóa ảnh đã chọn")
+        gallery_remove_btn.clicked.connect(self._remove_selected_gallery_image)
+        gallery_buttons = QHBoxLayout()
+        gallery_buttons.addWidget(gallery_add_btn)
+        gallery_buttons.addWidget(gallery_remove_btn)
+        gallery_buttons.addStretch()
+
         form = QFormLayout()
         form.addRow("Mã hàng:", self.code_edit)
         form.addRow("Tên mặt hàng:", self.name_edit)
@@ -140,7 +185,11 @@ class ProductDialog(QDialog):
         form.addRow("Giá vốn:", self.cost_spin)
         form.addRow("Số lượng sỉ (0 = không có):", self.bulk_qty_spin)
         form.addRow("Tên đơn vị đóng gói lớn:", self.bulk_unit_edit)
+        form.addRow("Tên tiếng Nga:", self.name_ru_edit)
+        form.addRow("Mô tả chi tiết:", self.description_edit)
         form.addRow("Ảnh sản phẩm:", image_row)
+        form.addRow("Bộ sưu tập ảnh:", self.gallery_list_widget)
+        form.addRow("", gallery_buttons)
         form.addRow("Bán đến hết ngày:", seasonal_row)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
@@ -186,6 +235,55 @@ class ProductDialog(QDialog):
         self.image_preview.setPixmap(QPixmap())
         self.image_preview.setText("Chưa có ảnh")
 
+    def _refresh_gallery_widget(self) -> None:
+        self.gallery_list_widget.clear()
+        images_dir = site_repo_dir() / "images"
+        for filename in self._gallery_existing:
+            if filename in self._gallery_pending_remove:
+                continue
+            item = QListWidgetItem(QIcon(str(images_dir / filename)), "")
+            item.setData(Qt.ItemDataRole.UserRole, ("existing", filename))
+            item.setToolTip(filename)
+            self.gallery_list_widget.addItem(item)
+        for path in self._gallery_pending_add:
+            item = QListWidgetItem(QIcon(str(path)), "(mới)")
+            item.setData(Qt.ItemDataRole.UserRole, ("new", path))
+            item.setToolTip(f"{path.name} -- sẽ lưu khi bấm OK")
+            self.gallery_list_widget.addItem(item)
+
+    def _pick_gallery_images(self) -> None:
+        from shop.core.product_images import MIN_SHORT_SIDE
+
+        paths, _ = QFileDialog.getOpenFileNames(self, "Thêm ảnh vào bộ sưu tập", "", "Ảnh (*.jpg *.jpeg *.png *.webp)")
+        if not paths:
+            return
+        rejected = []
+        for path_str in paths:
+            pixmap = QPixmap(path_str)
+            if pixmap.isNull() or min(pixmap.width(), pixmap.height()) < MIN_SHORT_SIDE:
+                rejected.append(Path(path_str).name)
+                continue
+            self._gallery_pending_add.append(Path(path_str))
+        self._refresh_gallery_widget()
+        if rejected:
+            QMessageBox.warning(
+                self,
+                "Một số ảnh không hợp lệ",
+                "Bỏ qua (ảnh hỏng hoặc quá nhỏ, cạnh ngắn cần tối thiểu "
+                f"{MIN_SHORT_SIDE}px):\n" + "\n".join(rejected),
+            )
+
+    def _remove_selected_gallery_image(self) -> None:
+        item = self.gallery_list_widget.currentItem()
+        if item is None:
+            return
+        kind, value = item.data(Qt.ItemDataRole.UserRole)
+        if kind == "existing":
+            self._gallery_pending_remove.append(value)
+        else:
+            self._gallery_pending_add.remove(value)
+        self._refresh_gallery_widget()
+
     def _on_seasonal_toggled(self, checked: bool) -> None:
         self.sale_until_edit.setEnabled(checked)
 
@@ -205,6 +303,19 @@ class ProductDialog(QDialog):
         from simply not touching the image this time."""
         return self._remove_image
 
+    def description_value(self) -> str:
+        return self.description_edit.toPlainText().strip()
+
+    def gallery_additions(self) -> list[Path]:
+        """Local files picked this session, not yet resized/saved --
+        applied by the caller (shop.ui.products_page) after the product
+        row exists, same reasoning as picked_image_path()."""
+        return list(self._gallery_pending_add)
+
+    def gallery_removals(self) -> list[str]:
+        """Existing gallery filenames marked for removal this session."""
+        return list(self._gallery_pending_remove)
+
     def values(self) -> dict:
         return {
             "code": self.code_edit.text().strip(),
@@ -214,6 +325,7 @@ class ProductDialog(QDialog):
             "cost_price": self.cost_spin.value(),
             "bulk_qty": self.bulk_qty_spin.value(),
             "bulk_unit": self.bulk_unit_edit.text().strip(),
+            "name_ru": self.name_ru_edit.text().strip(),
         }
 
 

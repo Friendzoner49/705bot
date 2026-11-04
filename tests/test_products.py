@@ -90,3 +90,59 @@ def test_product_dialog_can_explicitly_clear_bulk_unit(conn):
     upsert_product(conn, "X6", "Test", "goi", 100, bulk_qty=30, bulk_unit="thùng", source="test")
     upsert_product(conn, "X6", "Test", "goi", 100, bulk_qty=30, bulk_unit="", source="test")
     assert get_product(conn, "X6")["bulk_unit"] == ""
+
+
+def test_new_product_defaults_to_blank_name_ru(conn):
+    upsert_product(conn, "X7", "Test", "goi", 100, source="test")
+    assert get_product(conn, "X7")["name_ru"] == ""
+
+
+def test_upsert_without_name_ru_kwarg_preserves_it(conn):
+    """Same guarantee as bulk_unit (lần 36): "Áp dụng giá mới" from a
+    supplier invoice never carries name_ru, so re-applying a price must
+    not silently blank out a Russian name typed in once through
+    ProductDialog."""
+    upsert_product(conn, "X8", "Test", "goi", 100, name_ru="Тест", source="test")
+    upsert_product(
+        conn,
+        code="X8",
+        name="Test edited",
+        unit="goi",
+        cost_price=120,
+        source="supplier-invoice-test",  # no name_ru kwarg, like apply_invoice()
+    )
+    assert get_product(conn, "X8")["name_ru"] == "Тест"
+
+
+def test_product_dialog_can_explicitly_clear_name_ru(conn):
+    upsert_product(conn, "X9", "Test", "goi", 100, name_ru="Тест", source="test")
+    upsert_product(conn, "X9", "Test", "goi", 100, name_ru="", source="test")
+    assert get_product(conn, "X9")["name_ru"] == ""
+
+
+def test_new_product_defaults_to_empty_gallery_and_description(conn):
+    from shop.core.products import gallery_list
+
+    upsert_product(conn, "QT01", "Test", "chai", 1000, source="test")
+    product = get_product(conn, "QT01")
+    assert gallery_list(product) == []
+    assert product["description"] == ""
+
+
+def test_set_gallery_filenames_round_trips_order(conn):
+    from shop.core.products import gallery_list, set_gallery_filenames
+
+    upsert_product(conn, "QT02", "Test", "chai", 1000, source="test")
+    set_gallery_filenames(conn, "QT02", ["QT02-g1.jpg", "QT02-g2.jpg", "QT02-g3.jpg"])
+    assert gallery_list(get_product(conn, "QT02")) == ["QT02-g1.jpg", "QT02-g2.jpg", "QT02-g3.jpg"]
+
+
+def test_set_description_then_upsert_without_it_is_unaffected(conn):
+    """description is managed outside upsert_product (like sale_until) --
+    re-applying a price from a supplier invoice must never touch it."""
+    from shop.core.products import set_description
+
+    upsert_product(conn, "QT03", "Test", "chai", 1000, source="test")
+    set_description(conn, "QT03", "Phiên bản đặc biệt.")
+    upsert_product(conn, "QT03", "Test edited", "chai", 1100, source="supplier-invoice-test")
+    assert get_product(conn, "QT03")["description"] == "Phiên bản đặc biệt."

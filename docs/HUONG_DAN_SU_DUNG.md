@@ -111,7 +111,20 @@ trạng còn/hết hàng).
     mặt hàng có giá sỉ (vd "thùng" cho mì tôm 30 gói/thùng, "túi" cho gạo
     4,5kg/túi). Dùng để ghép thành câu gửi nhà cung cấp ở "Cần nhập hàng
     gì?" (tab Đơn hàng online) — không ảnh hưởng tới giá bán cho khách.
-- **Sửa** — chọn 1 dòng trong bảng rồi bấm, sửa y hệt form thêm mới.
+  - **"Tên tiếng Nga"** — để trống, điền dần qua từng đợt hàng khi đối
+    chiếu với tên AI đọc được trên ảnh hóa đơn NCC (cột "Tên tiếng Nga (AI
+    đọc)" trong dialog Hóa đơn nhà cung cấp). Chỉ hiện trong app, **không
+    bao giờ** lên website.
+  - **"Mô tả chi tiết" + "Bộ sưu tập ảnh"** (chỉ cần cho mặt hàng đặc biệt,
+    vd nhóm "Quà tặng") — mô tả dài hiện dưới tên mặt hàng khi khách bấm
+    xem chi tiết; bộ sưu tập là NHIỀU ảnh (ngoài "Ảnh sản phẩm" chính) để
+    khách xem hết các góc chụp, bấm "Thêm ảnh vào bộ sưu tập…" chọn nhiều
+    ảnh cùng lúc, chọn 1 ảnh trong khung rồi bấm "Xóa ảnh đã chọn" để bỏ.
+    Để trống cả hai nếu mặt hàng không cần giới thiệu dài — không ảnh
+    hưởng gì tới các mặt hàng tạp hóa thường.
+- **Sửa** — chọn 1 dòng trong bảng rồi bấm, sửa y hệt form thêm mới. Bấm
+  **đúp 2 lần** vào 1 dòng bất kỳ cũng mở form này, không cần chọn dòng
+  trước.
 - **Ô chọn trạng thái (3 nấc) + nút "Áp dụng"** — chọn 1 dòng trong bảng,
   chọn 1 trong 3 trạng thái rồi bấm Áp dụng:
   - **Đang bán** — bình thường, hiện đầy đủ ở app và website.

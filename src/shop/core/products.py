@@ -1,6 +1,7 @@
 """Product catalog: list/add/edit, with every cost change logged to
 price_history so past invoices can always be explained.
 """
+import json
 import sqlite3
 from datetime import datetime, timezone
 
@@ -11,7 +12,7 @@ def _now() -> str:
 
 _COLS = [
     "code", "name", "unit", "category", "cost_price", "bulk_qty", "bulk_unit", "active", "image_filename",
-    "in_stock", "sale_until", "channel_announced_at",
+    "in_stock", "sale_until", "channel_announced_at", "name_ru", "gallery_filenames", "description",
 ]
 
 
@@ -52,23 +53,25 @@ def upsert_product(
     category: str | None = None,
     active: bool = True,
     in_stock: bool | None = None,
+    name_ru: str | None = None,
     source: str = "app",
 ) -> None:
     """Insert a new product, or update an existing one. Any cost_price
     change (including the first insert) is logged to price_history.
 
-    category=None, in_stock=None and bulk_unit=None leave an existing
-    product's value untouched (rather than wiping it) -- callers that
-    want to actually clear/change them must do so explicitly (via
-    set_category()/set_in_stock(), or by passing bulk_unit="" here).
-    This matters because import_xlsx --force, "Áp dụng giá mới" and some
-    callers don't carry these fields at all, and silently resetting them
-    would undo manual grouping, a "tạm hết hàng" flag, or a pack label
-    typed in once through ProductDialog. A genuinely new product
-    defaults to in_stock=True and bulk_unit=""."""
+    category=None, in_stock=None, bulk_unit=None and name_ru=None leave
+    an existing product's value untouched (rather than wiping it) --
+    callers that want to actually clear/change them must do so
+    explicitly (via set_category()/set_in_stock(), or by passing
+    bulk_unit=""/name_ru="" here). This matters because import_xlsx
+    --force, "Áp dụng giá mới" and some callers don't carry these fields
+    at all, and silently resetting them would undo manual grouping, a
+    "tạm hết hàng" flag, a pack label, or a Russian name typed in once
+    through ProductDialog. A genuinely new product defaults to
+    in_stock=True, bulk_unit="" and name_ru=""."""
     now = _now()
     existing_row = conn.execute(
-        "SELECT cost_price, category, in_stock, bulk_unit FROM products WHERE code = ?", (code,)
+        "SELECT cost_price, category, in_stock, bulk_unit, name_ru FROM products WHERE code = ?", (code,)
     ).fetchone()
     existing_cost = existing_row[0] if existing_row else None
     if category is None and existing_row is not None:
@@ -77,11 +80,13 @@ def upsert_product(
         in_stock = bool(existing_row[2]) if existing_row is not None else True
     if bulk_unit is None:
         bulk_unit = existing_row[3] if existing_row is not None else ""
+    if name_ru is None:
+        name_ru = existing_row[4] if existing_row is not None else ""
 
     conn.execute(
         """
-        INSERT INTO products (code, name, unit, category, cost_price, bulk_qty, bulk_unit, active, in_stock, source_file, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO products (code, name, unit, category, cost_price, bulk_qty, bulk_unit, active, in_stock, name_ru, source_file, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(code) DO UPDATE SET
             name = excluded.name,
             unit = excluded.unit,
@@ -91,10 +96,11 @@ def upsert_product(
             bulk_unit = excluded.bulk_unit,
             active = excluded.active,
             in_stock = excluded.in_stock,
+            name_ru = excluded.name_ru,
             source_file = excluded.source_file,
             updated_at = excluded.updated_at
         """,
-        (code, name, unit, category, cost_price, bulk_qty, bulk_unit, int(active), int(in_stock), source, now),
+        (code, name, unit, category, cost_price, bulk_qty, bulk_unit, int(active), int(in_stock), name_ru, source, now),
     )
 
     if existing_cost is None or existing_cost != cost_price:
@@ -142,6 +148,35 @@ def set_sale_until(conn: sqlite3.Connection, code: str, sale_until: str | None) 
 
 def set_channel_announced(conn: sqlite3.Connection, code: str, announced_at: str | None) -> None:
     conn.execute("UPDATE products SET channel_announced_at = ? WHERE code = ?", (announced_at, code))
+    conn.commit()
+
+
+def gallery_list(product: dict) -> list[str]:
+    """Parse a product's gallery_filenames column (a JSON array) into a
+    plain list -- tolerant of the '' a pre-migration row would never
+    actually have (column default is '[]') but defensive anyway, since
+    hand-editing the DB is always possible."""
+    raw = product.get("gallery_filenames") or "[]"
+    try:
+        value = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    return value if isinstance(value, list) else []
+
+
+def set_gallery_filenames(conn: sqlite3.Connection, code: str, filenames: list[str]) -> None:
+    """Special products only (lần 38, "Quà tặng") -- most products never
+    call this, gallery_filenames stays '[]'. Order is display order on
+    the website/app, first item shown first."""
+    conn.execute(
+        "UPDATE products SET gallery_filenames = ?, updated_at = ? WHERE code = ?",
+        (json.dumps(filenames, ensure_ascii=False), _now(), code),
+    )
+    conn.commit()
+
+
+def set_description(conn: sqlite3.Connection, code: str, description: str) -> None:
+    conn.execute("UPDATE products SET description = ?, updated_at = ? WHERE code = ?", (description, _now(), code))
     conn.commit()
 
 
