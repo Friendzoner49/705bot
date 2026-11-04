@@ -112,20 +112,17 @@ def _last_source_key(conn: sqlite3.Connection) -> str | None:
     return floor or backed_off
 
 
-def sync_from_bot(conn: sqlite3.Connection, worker_url: str, sync_secret: str, timeout: float = 10.0) -> int:
-    """Pulls new orders and inserts them (source_key is UNIQUE, so a
-    re-pulled order is silently skipped, not duplicated). Returns how
-    many were newly inserted. Never writes to products/pricing -- only
-    convert_to_invoice() does that, from CURRENT prices, not whatever
-    the bot estimated at order time."""
+def fetch_sync_json(
+    worker_url: str, sync_secret: str, path: str, since: str | None, timeout: float, bad_json_msg: str
+) -> dict:
+    """GET <worker_url><path>[?since=...] with the shared secret and return the parsed JSON.
+    Every failure becomes a SyncError with a plain Vietnamese message (never a bare exception
+    escaping into a Qt slot). bad_json_msg is what to say when a 200 isn't JSON."""
     if not worker_url or not sync_secret:
         raise SyncError("Chưa cài đặt đồng bộ: cần nhập Worker URL và Mã đồng bộ trước (xem bot/README.md).")
-
-    since = _last_source_key(conn)
-    url = worker_url.rstrip("/") + "/sync/orders"
+    url = worker_url.rstrip("/") + path
     if since:
         url += f"?since={quote(since)}"
-
     # The User-Agent matters: Cloudflare's edge-level bot protection
     # blocks Python's default "Python-urllib/..." signature with its
     # own 403 (body "error code: 1010"), BEFORE the request ever reaches
@@ -137,7 +134,7 @@ def sync_from_bot(conn: sqlite3.Connection, worker_url: str, sync_secret: str, t
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
+            return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         if e.code == 403:
             raise SyncError("Mã đồng bộ không đúng. Kiểm tra lại Mã đồng bộ trong app và SYNC_SECRET trên Cloudflare.") from e
@@ -149,17 +146,23 @@ def sync_from_bot(conn: sqlite3.Connection, worker_url: str, sync_secret: str, t
     except (TimeoutError, OSError) as e:
         raise SyncError("Kết nối tới bot quá lâu, thử lại sau.") from e
     except ValueError as e:
-        # A 200 response that isn't valid JSON. This endpoint has been
-        # live since lần 13, so unlike its sibling in
-        # supplier_invoices.sync_photos_from_bot (a genuinely newer
-        # endpoint that might not be deployed yet), the realistic cause
-        # here is a VPN/captive-portal page intercepting the response,
-        # not a missing route. json.loads() raising must not escape as
-        # a bare exception into the Qt slot calling this either way.
-        raise SyncError(
-            "Không đọc được phản hồi từ bot (không phải JSON) -- có thể do VPN hoặc mạng đang chặn/chuyển hướng. "
-            "Kiểm tra lại mạng rồi thử lại."
-        ) from e
+        raise SyncError(bad_json_msg) from e
+
+
+def sync_from_bot(conn: sqlite3.Connection, worker_url: str, sync_secret: str, timeout: float = 10.0) -> int:
+    """Pulls new orders and inserts them (source_key is UNIQUE, so a
+    re-pulled order is silently skipped, not duplicated). Returns how
+    many were newly inserted. Never writes to products/pricing -- only
+    convert_to_invoice() does that, from CURRENT prices, not whatever
+    the bot estimated at order time."""
+    # This endpoint has been live since lần 13, so a non-JSON 200 is most
+    # likely a VPN/captive-portal page intercepting the response, not a
+    # missing route.
+    data = fetch_sync_json(
+        worker_url, sync_secret, "/sync/orders", _last_source_key(conn), timeout,
+        "Không đọc được phản hồi từ bot (không phải JSON) -- có thể do VPN hoặc mạng đang chặn/chuyển hướng. "
+        "Kiểm tra lại mạng rồi thử lại.",
+    )
 
     inserted = 0
     for order in data.get("orders", []):

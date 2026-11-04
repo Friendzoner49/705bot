@@ -14,13 +14,9 @@ cost_price, so every line needs the user's confirmation before
 line_cost_preview() is trusted and apply_invoice() writes it.
 """
 import base64
-import json
 import sqlite3
-import urllib.error
-import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import quote
 
 from shop.core.products import get_product, list_products, upsert_product
 from shop.core.text import normalize
@@ -377,7 +373,7 @@ def apply_invoice(conn: sqlite3.Connection, supplier_invoice_id: int) -> list[di
 # edge User-Agent workaround -- because it's the exact same kind of
 # operation (admin app pulls new records from the bot via GET + a
 # header secret) against a sibling endpoint, not a coincidence.
-from shop.core.online_orders import SyncError, _sync_floor_ms  # noqa: E402 -- see module docstring above
+from shop.core.online_orders import SyncError, _sync_floor_ms, fetch_sync_json  # noqa: E402 -- see module docstring above
 
 _PHOTO_SYNC_BACKOFF_MS = 10 * 60 * 1000
 
@@ -421,35 +417,12 @@ def sync_photos_from_bot(
     apply_invoice() does that, and only once a human opens the invoice
     and clicks "Áp dụng giá mới vào danh mục". Returns how many were
     newly inserted."""
-    if not worker_url or not sync_secret:
-        raise SyncError("Chưa cài đặt đồng bộ: cần nhập Worker URL và Mã đồng bộ trước (xem bot/README.md).")
-
-    since = _last_photo_source_key(conn)
-    url = worker_url.rstrip("/") + "/sync/photos"
-    if since:
-        url += f"?since={quote(since)}"
-
-    req = urllib.request.Request(
-        url, headers={"X-Sync-Secret": sync_secret, "User-Agent": "ShopApp-OnlineOrdersSync/1.0"}
+    # A non-JSON 200 here usually means this Worker build doesn't have
+    # /sync/photos yet and the catch-all "OK" text response answered.
+    data = fetch_sync_json(
+        worker_url, sync_secret, "/sync/photos", _last_photo_source_key(conn), timeout,
+        "Bot chưa hỗ trợ đồng bộ ảnh hóa đơn -- cần deploy lại Worker (xem bot/README.md).",
     )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        if e.code == 403:
-            raise SyncError("Mã đồng bộ không đúng. Kiểm tra lại Mã đồng bộ trong app và SYNC_SECRET trên Cloudflare.") from e
-        raise SyncError(f"Bot trả về lỗi (HTTP {e.code}). Thử lại sau.") from e
-    except urllib.error.URLError as e:
-        raise SyncError(
-            "Không kết nối được tới bot. Kiểm tra mạng (có thể cần VPN nếu đang ở Nga) rồi thử lại."
-        ) from e
-    except (TimeoutError, OSError) as e:
-        raise SyncError("Kết nối tới bot quá lâu, thử lại sau.") from e
-    except ValueError as e:
-        # A 200 response that isn't valid JSON -- e.g. this Worker build
-        # doesn't have /sync/photos yet and the catch-all "OK" text
-        # response answered instead. Same gotcha as online_orders.sync_from_bot.
-        raise SyncError("Bot chưa hỗ trợ đồng bộ ảnh hóa đơn -- cần deploy lại Worker (xem bot/README.md).") from e
 
     inserted = 0
     photos_dir.mkdir(parents=True, exist_ok=True)

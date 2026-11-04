@@ -36,6 +36,13 @@ from shop.paths import site_repo_dir
 _KNOWN_EMPTY_CATEGORIES = ["Quà tặng"]
 
 
+def _ok_cancel(dialog, on_accept) -> QDialogButtonBox:
+    buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+    buttons.accepted.connect(on_accept)
+    buttons.rejected.connect(dialog.reject)
+    return buttons
+
+
 class ProductDialog(QDialog):
     """Add or edit a product. Pass `product` (a dict from shop.core.products)
     to edit; omit it to add a new one. `categories` is the list of
@@ -192,9 +199,7 @@ class ProductDialog(QDialog):
         form.addRow("", gallery_buttons)
         form.addRow("Bán đến hết ngày:", seasonal_row)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
+        buttons = _ok_cancel(self, self.accept)
 
         layout = QVBoxLayout(self)
         layout.addLayout(form)
@@ -355,9 +360,7 @@ class CustomerDialog(QDialog):
         form.addRow("% markup mặc định:", self.markup_spin)
         form.addRow("Công nợ đầu kỳ:", self.opening_balance_spin)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
+        buttons = _ok_cancel(self, self.accept)
 
         layout = QVBoxLayout(self)
         layout.addLayout(form)
@@ -392,9 +395,7 @@ class PaymentDialog(QDialog):
         form.addRow("Ngày:", self.date_edit)
         form.addRow("Ghi chú:", self.note_edit)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
+        buttons = _ok_cancel(self, self.accept)
 
         layout = QVBoxLayout(self)
         layout.addLayout(form)
@@ -477,9 +478,7 @@ class ProductPickerDialog(QDialog):
         self.list_widget = QListWidget()
         self.list_widget.itemDoubleClicked.connect(self._pick)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(self._confirm)
-        buttons.rejected.connect(self.reject)
+        buttons = _ok_cancel(self, self._confirm)
 
         layout = QVBoxLayout(self)
         layout.addWidget(self.search_edit)
@@ -533,9 +532,7 @@ class BotSyncSettingsDialog(QDialog):
         )
         note.setWordWrap(True)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
+        buttons = _ok_cancel(self, self.accept)
 
         layout = QVBoxLayout(self)
         layout.addLayout(form)
@@ -571,9 +568,7 @@ class CustomerPickerDialog(QDialog):
         new_btn = QPushButton("+ Tạo khách hàng mới…")
         new_btn.clicked.connect(self._create_new)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(self._confirm)
-        buttons.rejected.connect(self.reject)
+        buttons = _ok_cancel(self, self._confirm)
 
         layout = QVBoxLayout(self)
         layout.addWidget(self.search_edit)
@@ -643,9 +638,7 @@ class CustomLineDialog(QDialog):
         form.addRow("Đơn giá:", self.price_spin)
         form.addRow("Số lượng:", self.qty_spin)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(self._confirm)
-        buttons.rejected.connect(self.reject)
+        buttons = _ok_cancel(self, self._confirm)
 
         layout = QVBoxLayout(self)
         layout.addLayout(form)
