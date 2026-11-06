@@ -12,7 +12,7 @@ def _now() -> str:
 
 _COLS = [
     "code", "name", "unit", "category", "cost_price", "bulk_qty", "bulk_unit", "active", "image_filename",
-    "in_stock", "sale_until", "channel_announced_at", "name_ru", "gallery_filenames", "description",
+    "in_stock", "sale_until", "channel_announced_at", "name_ru", "gallery_filenames", "description", "bulk_price_override",
 ]
 
 
@@ -118,6 +118,19 @@ def set_active(conn: sqlite3.Connection, code: str, active: bool) -> None:
 
 def set_category(conn: sqlite3.Connection, code: str, category: str | None) -> None:
     conn.execute("UPDATE products SET category = ?, updated_at = ? WHERE code = ?", (category, _now(), code))
+    conn.commit()
+
+
+def set_bulk_price_override(conn: sqlite3.Connection, code: str, price: int | None) -> None:
+    """The owner's fixed whole-bag SALE price exception (None removes it and goes
+    back to the formula). A dedicated setter, not part of upsert_product, so
+    price imports and supplier-invoice applies can never wipe it."""
+    if price is not None and price <= 0:
+        raise ValueError("Giá sỉ ngoại lệ phải lớn hơn 0 (hoặc bỏ ngoại lệ).")
+    conn.execute(
+        "UPDATE products SET bulk_price_override = ?, updated_at = ? WHERE code = ?",
+        (None if price is None else int(price), _now(), code),
+    )
     conn.commit()
 
 

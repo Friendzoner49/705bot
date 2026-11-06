@@ -25,7 +25,8 @@ export function telegramApi(token) {
     // Strips the inline keyboard off an already-sent message (lần 29,
     // phone/skip confirmation) -- called right after a tap is handled,
     // so a slow double-tap can't fire finishCheckout() twice.
-    editMessageReplyMarkup: (chat_id, message_id) => call("editMessageReplyMarkup", { chat_id, message_id }),
+    editMessageReplyMarkup: (chat_id, message_id, reply_markup) =>
+      call("editMessageReplyMarkup", { chat_id, message_id, ...(reply_markup ? { reply_markup } : {}) }),
     // Up to 100 ids per call (Telegram's own limit); ids it can't
     // delete (already gone, or older than 48h) are silently skipped,
     // not treated as an error -- see adminMessageLog.js.
@@ -53,6 +54,22 @@ export function telegramApi(token) {
     // publishing would race that deploy and fail with "can't fetch
     // photo". A raw upload has no such dependency. Separate from
     // `call()` above because this needs multipart/form-data, not JSON.
+    // Sends the file as a DOCUMENT (not a photo) so Telegram does not
+    // re-compress it -- "/hangve" PDF scans come back at full sharpness.
+    sendDocumentUpload: async (chat_id, bytes, filename, extra = {}) => {
+      const form = new FormData();
+      form.append("chat_id", String(chat_id));
+      for (const [key, value] of Object.entries(extra)) {
+        form.append(key, String(value));
+      }
+      form.append("document", new Blob([bytes]), filename);
+      const res = await fetch(`${API_BASE}/bot${token}/sendDocument`, { method: "POST", body: form });
+      const data = await res.json();
+      if (!data.ok) {
+        throw new Error(`Telegram sendDocument failed: ${data.description || res.status}`);
+      }
+      return data.result;
+    },
     sendPhotoUpload: async (chat_id, bytes, filename, extra = {}) => {
       const form = new FormData();
       form.append("chat_id", String(chat_id));

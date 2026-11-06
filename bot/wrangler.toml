@@ -18,3 +18,9 @@ CONTACT_URL = "https://t.me/friendzonerisme"
 [[kv_namespaces]]
 binding = "ORDER_KV"
 id = "befb2d29f3d649ccb391ccfdab337074"
+
+# Automatic "chưa tới nhận hàng" reminder (src/pickupReminders.js): runs
+# hourly, 06:00-17:00 UTC = 09:00-20:00 Saint Petersburg, so no fee
+# warning ever reaches a customer at night.
+[triggers]
+crons = ["0 6-17 * * *"]

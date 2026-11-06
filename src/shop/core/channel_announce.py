@@ -18,7 +18,7 @@ import json
 import sqlite3
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from shop.core.pricing import PUBLIC_MARKUP_PCT, unit_price
 from shop.core.products import get_product, set_channel_announced
@@ -146,3 +146,68 @@ def announce_product(
         raise AnnounceError("Bot chưa hỗ trợ đăng lên kênh -- cần deploy lại Worker (xem bot/README.md).") from e
 
     set_channel_announced(conn, code, _now())
+
+
+# ---- "Đơn ... đã về" text post to the channel (from "Duyệt đợt hàng") ----
+
+ARRIVAL_CONTACTS = "Hùng, Giang"
+ARRIVAL_PLACE = "705"
+ARRIVAL_DEADLINE_DAYS = 2  # same 2-day window as the delivery-fee notice
+
+
+def default_batch_name(today: date) -> str:
+    """"đầu/giữa/cuối tháng M" from the day of the month."""
+    part = "đầu" if today.day <= 10 else "giữa" if today.day <= 20 else "cuối"
+    return f"{part} tháng {today.month}"
+
+
+def default_deadline(today: date) -> str:
+    end = today + timedelta(days=ARRIVAL_DEADLINE_DAYS)
+    return f"23h59 {end.day}/{end.month}/{end.year}"
+
+
+def build_arrival_post(batch_name: str, deadline: str, contacts: str = ARRIVAL_CONTACTS, place: str = ARRIVAL_PLACE) -> str:
+    """The owner's usual channel post; the Worker shows the first line bold."""
+    return (
+        f"Đơn {batch_name} đã về!!!\n"
+        f"Ai có nhu cầu lấy liên hệ {contacts} để nhận tại {place}, hạn đến {deadline}. "
+        "Bắt đầu nhận đơn từ bây giờ, đồ sẽ có trong 1-2 tuần tới.\n"
+        "Trân trọng."
+    )
+
+
+def post_channel_text(worker_url: str, sync_secret: str, text: str, timeout: float = 60.0) -> None:
+    """Posts a plain-text message to the public channel through the Worker."""
+    if not worker_url or not sync_secret:
+        raise AnnounceError(
+            "Chưa cài đặt đồng bộ: cần nhập Worker URL và Mã đồng bộ trước "
+            "(tab \"Đơn hàng online\" → \"Cài đặt đồng bộ…\")."
+        )
+    req = urllib.request.Request(
+        worker_url.rstrip("/") + "/channel/text",
+        data=json.dumps({"text": text}).encode("utf-8"),
+        method="POST",
+        headers={"X-Sync-Secret": sync_secret, "User-Agent": "ShopApp-ChannelAnnounce/1.0", "Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        if e.code == 403:
+            raise AnnounceError("Mã đồng bộ không đúng. Kiểm tra lại Mã đồng bộ trong app và SYNC_SECRET trên Cloudflare.") from e
+        if e.code == 502:
+            raise AnnounceError(
+                "Telegram từ chối tin này -- kiểm tra CHANNEL_CHAT_ID đúng chưa, và bot còn quyền \"Post messages\" trong kênh không."
+            ) from e
+        raise AnnounceError(
+            f"Bot trả về lỗi (HTTP {e.code}). Có thể chưa cài đặt CHANNEL_CHAT_ID hoặc chưa deploy lại Worker (xem bot/README.md)."
+        ) from e
+    except urllib.error.URLError as e:
+        raise AnnounceError("Không kết nối được tới bot. Kiểm tra mạng (có thể cần VPN nếu đang ở Nga) rồi thử lại.") from e
+    except (TimeoutError, OSError) as e:
+        raise AnnounceError(
+            "Kết nối tới bot quá lâu -- CÓ THỂ TIN ĐÃ ĐĂNG dù máy chưa kịp nhận phản hồi. "
+            "Mở kênh kiểm tra trước khi bấm đăng lại, tránh đăng trùng."
+        ) from e
+    except ValueError as e:
+        raise AnnounceError("Bot chưa hỗ trợ đăng bài chữ lên kênh -- cần deploy lại Worker (xem bot/README.md).") from e

@@ -22,6 +22,13 @@ function bulkPrice(price, bulkQty) {
   return Math.round(price * bulkQty * BULK_DISCOUNT_FACTOR);
 }
 
+// Price of ONE whole pack. The published catalog's `bulk_price` already
+// includes the owner's fixed exception (shop.core.pricing.effective_bulk_price);
+// the formula is only the fallback for a catalog that doesn't carry it.
+function packPrice(item) {
+  return item.bulk_price ? item.bulk_price : bulkPrice(item.price, item.bulk_qty);
+}
+
 export function lineTotal(item, qty) {
   if (!item.bulk_qty || qty < item.bulk_qty) {
     return Math.round(item.price * qty);
@@ -34,7 +41,7 @@ export function lineTotal(item, qty) {
   // hair under a whole number of tiers.
   const fullTiers = Math.floor(qty / item.bulk_qty + 1e-9);
   const remainder = qty - fullTiers * item.bulk_qty;
-  return fullTiers * bulkPrice(item.price, item.bulk_qty) + Math.round(item.price * remainder);
+  return fullTiers * packPrice(item) + Math.round(item.price * remainder);
 }
 
 // Same header/line/footer shape as the website's buildOrderText(), so

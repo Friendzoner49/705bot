@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from shop.core.supplier_invoices import SyncError, list_invoices, sync_photos_from_bot
+from shop.core.supplier_invoices import SyncError, delete_supplier_invoice, list_invoices, sync_photos_from_bot
 from shop.paths import bot_sync_settings, supplier_invoices_dir
 from shop.ui.dialogs import BotSyncSettingsDialog
 from shop.ui.supplier_invoice_dialog import SupplierInvoiceDialog
@@ -33,7 +33,7 @@ class SupplierInvoicesPage(QWidget):
         # Ảnh gửi vào group Telegram bằng lệnh "/hangve" (lần 20) --
         # dùng chung Worker URL + Mã đồng bộ với tab "Đơn hàng online",
         # cài 1 lần ở đó là đủ (xem shop.ui.online_orders_page).
-        sync_btn = QPushButton("🔄 Đồng bộ ảnh từ Telegram")
+        sync_btn = QPushButton("🔄 Đồng bộ từ Telegram")
         sync_btn.clicked.connect(self.sync_photos_now)
 
         top = QHBoxLayout()
@@ -41,6 +41,9 @@ class SupplierInvoicesPage(QWidget):
         top.addWidget(open_btn)
         top.addWidget(sync_btn)
         top.addStretch()
+        delete_btn = QPushButton("🗑 Xóa hóa đơn")
+        delete_btn.clicked.connect(self.delete_selected)
+        top.addWidget(delete_btn)
 
         self.table = QTableWidget(0, len(HEADERS))
         self.table.setHorizontalHeaderLabels(HEADERS)
@@ -83,6 +86,28 @@ class SupplierInvoicesPage(QWidget):
             return
         dialog = SupplierInvoiceDialog(self, self.conn, invoice_id=self._ids[row])
         dialog.exec()
+        self.refresh()
+
+    def delete_selected(self):
+        row = self.table.currentRow()
+        if row < 0 or row >= len(self._ids):
+            QMessageBox.information(self, "Chưa chọn hóa đơn", "Bấm chọn 1 hóa đơn trong danh sách trước.")
+            return
+        invoice = next(inv for inv in list_invoices(self.conn) if inv["id"] == self._ids[row])
+        warning = ""
+        if invoice["applied_at"]:
+            warning += "\n\n⚠ Hóa đơn này ĐÃ áp dụng giá vào danh mục — giá vốn đã đổi vẫn giữ nguyên, không tự trả về giá cũ."
+        if invoice.get("order_batch_id"):
+            warning += "\n⚠ Hóa đơn đang nối với 1 đợt hàng online — sẽ bị gỡ khỏi đợt đó."
+        confirm = QMessageBox.question(
+            self,
+            "Xóa hóa đơn nhà cung cấp?",
+            f"Xóa hóa đơn #{invoice['id']} cùng các dòng hàng của nó? Không thể hoàn tác.\n"
+            f"(File ảnh/PDF gốc trong thư mục dữ liệu được giữ lại.){warning}",
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        delete_supplier_invoice(self.conn, invoice["id"])
         self.refresh()
 
     def sync_photos_now(self):

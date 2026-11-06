@@ -1,10 +1,28 @@
 import { sendArrivalMessages } from "./arrivalNotify.js";
 import { handleUpdate } from "./handlers.js";
 import { listSyncOrders } from "./onlineOrdersSync.js";
-import { listSupplierPhotos } from "./supplierPhotoSync.js";
+import { BLOB_PREFIX, listSupplierPhotos } from "./supplierPhotoSync.js";
+import { runPickupReminders } from "./pickupReminders.js";
 import { telegramApi } from "./telegram.js";
 
+function escapeHtml(s) {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+// First line bold, the rest plain; everything HTML-escaped (the text comes
+// from the app, but never trust it to be markup-safe).
+export function boldFirstLineHtml(text) {
+  const [first, ...rest] = text.split("\n");
+  return [`<b>${escapeHtml(first)}</b>`, ...rest.map(escapeHtml)].join("\n");
+}
+
 export default {
+  // Cron Trigger (wrangler.toml [triggers]) -- automatic "chưa tới nhận
+  // hàng" reminders, see pickupReminders.js.
+  async scheduled(_event, env, ctx) {
+    ctx.waitUntil(runPickupReminders(env, telegramApi(env.BOT_TOKEN)));
+  },
+
   async fetch(request, env, _ctx) {
     const url = new URL(request.url);
 
@@ -49,6 +67,108 @@ export default {
         status: 200,
         headers: { "content-type": "application/json" },
       });
+    }
+
+    // Pushed BY the desktop app ("Duyệt đợt hàng" -> "📢 Đăng thông báo hàng về
+    // lên kênh"): a TEXT-ONLY post to the public channel. The first line is
+    // shown bold (like the owner's usual "Đơn đầu tháng … đã về!!!" posts).
+    // Same SYNC_SECRET auth and CHANNEL_CHAT_ID as /channel/announce.
+    if (url.pathname === "/channel/text") {
+      if (request.method !== "POST") {
+        return new Response("Method Not Allowed", { status: 405 });
+      }
+      const got = request.headers.get("X-Sync-Secret");
+      if (!env.SYNC_SECRET || got !== env.SYNC_SECRET) {
+        return new Response("Forbidden", { status: 403 });
+      }
+      if (!env.CHANNEL_CHAT_ID) {
+        return new Response(JSON.stringify({ error: "CHANNEL_CHAT_ID chưa được cài đặt trên Worker." }), {
+          status: 500,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      let body;
+      try {
+        body = await request.json();
+      } catch (_err) {
+        return new Response("Bad Request", { status: 400 });
+      }
+      if (typeof body.text !== "string" || !body.text.trim() || body.text.length > 3500) {
+        return new Response("Bad Request", { status: 400 });
+      }
+      try {
+        await telegramApi(env.BOT_TOKEN).sendMessage(env.CHANNEL_CHAT_ID, boldFirstLineHtml(body.text), {
+          parse_mode: "HTML",
+        });
+      } catch (err) {
+        console.error("channel/text failed:", err);
+        return new Response(JSON.stringify({ error: String(err.message || err) }), {
+          status: 502,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+
+    // Raw bytes of a "/hangve" PDF (see supplierPhotoSync.js): streamed
+    // straight from KV, no CPU spent encoding it.
+    if (url.pathname === "/sync/photo-blob") {
+      if (request.method !== "GET") {
+        return new Response("Method Not Allowed", { status: 405 });
+      }
+      const got = request.headers.get("X-Sync-Secret");
+      if (!env.SYNC_SECRET || got !== env.SYNC_SECRET) {
+        return new Response("Forbidden", { status: 403 });
+      }
+      const key = url.searchParams.get("key") || "";
+      if (!key.startsWith(BLOB_PREFIX)) {
+        return new Response("Bad Request", { status: 400 });
+      }
+      const stream = await env.ORDER_KV.get(key, { type: "stream" });
+      if (!stream) return new Response("Not Found", { status: 404 });
+      return new Response(stream, { status: 200, headers: { "content-type": "application/pdf" } });
+    }
+
+    // Pushed BY the desktop app after it rendered a "/hangve" PDF to a
+    // sharp image: posts it back into the SUPPLIER GROUP (only that chat
+    // is allowed -- never an arbitrary chat_id) as a reply to the PDF.
+    if (url.pathname === "/hangve/reply") {
+      if (request.method !== "POST") {
+        return new Response("Method Not Allowed", { status: 405 });
+      }
+      const got = request.headers.get("X-Sync-Secret");
+      if (!env.SYNC_SECRET || got !== env.SYNC_SECRET) {
+        return new Response("Forbidden", { status: 403 });
+      }
+      let body;
+      try {
+        body = await request.json();
+      } catch (_err) {
+        return new Response("Bad Request", { status: 400 });
+      }
+      if (!body.imageBase64 || !env.SUPPLIER_GROUP_CHAT_ID || String(body.chat_id) !== env.SUPPLIER_GROUP_CHAT_ID) {
+        return new Response("Bad Request", { status: 400 });
+      }
+      try {
+        const binary = atob(body.imageBase64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        const extra = body.caption ? { caption: body.caption } : {};
+        if (body.reply_to_message_id) extra.reply_to_message_id = body.reply_to_message_id;
+        await telegramApi(env.BOT_TOKEN).sendDocumentUpload(
+          env.SUPPLIER_GROUP_CHAT_ID,
+          bytes,
+          body.filename || "hoa-don.png",
+          extra,
+        );
+      } catch (err) {
+        console.error("hangve/reply failed:", err);
+        return new Response(JSON.stringify({ error: String(err.message || err) }), {
+          status: 502,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json" } });
     }
 
     // Pushed BY the desktop app (lần 21, seasonal products) to announce

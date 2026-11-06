@@ -10,6 +10,7 @@
 // (see CLAUDE.md section 7) -- distinguished only by the key prefix,
 // same convention already used there.
 const PREFIX = "photo:";
+export const BLOB_PREFIX = "photoblob:"; // raw PDF bytes, fetched via GET /sync/photo-blob
 const TTL_SECONDS = 60 * 60 * 24 * 90; // 90 days -- plenty of time for the app to pick it up
 
 // Built from the Telegram MESSAGE's own data (its `date`, in seconds,
@@ -30,9 +31,26 @@ function makePhotoKey(messageDateSec, fileUniqueId) {
 // nowhere close), and returning it inline in the sync response is
 // simpler than a second per-photo download round trip for the small
 // volume this feature actually sees (a handful of deliveries a month).
-export async function recordSupplierPhoto(env, { note, dataBase64, messageDateSec, fileUniqueId }) {
+// A PDF scan (mime "application/pdf") is stored as-is: the Worker can't
+// render it (no PDF library, 10ms CPU on the free tier) -- the app
+// renders it to an image on sync and posts the sharp image back to the
+// group via POST /hangve/reply, using reply_chat_id/reply_to_message_id.
+export async function recordSupplierPhoto(
+  env,
+  { note, dataBase64, rawBytes, messageDateSec, fileUniqueId, mime, replyChatId, replyToMessageId },
+) {
   const key = makePhotoKey(messageDateSec, fileUniqueId);
-  await env.ORDER_KV.put(key, JSON.stringify({ note: note || "", data: dataBase64 }), { expirationTtl: TTL_SECONDS });
+  const record = { note: note || "" };
+  if (rawBytes) {
+    record.blob = `${BLOB_PREFIX}${key.slice(PREFIX.length)}`;
+    await env.ORDER_KV.put(record.blob, rawBytes, { expirationTtl: TTL_SECONDS });
+  } else {
+    record.data = dataBase64;
+  }
+  if (mime) record.mime = mime;
+  if (replyChatId != null) record.reply_chat_id = String(replyChatId);
+  if (replyToMessageId != null) record.reply_to_message_id = replyToMessageId;
+  await env.ORDER_KV.put(key, JSON.stringify(record), { expirationTtl: TTL_SECONDS });
   return key;
 }
 

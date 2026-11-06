@@ -65,7 +65,7 @@ def test_build_customer_message_lists_each_delivered_line_with_no_total():
     lines = [{"name_at_order": "Bún khô", "qty": 2, "original_qty": None, "excluded": False}]
     text = build_customer_message(lines)
     assert "Bún khô: 2" in text
-    assert "₽" not in text and "RUB" not in text  # no money total
+    assert "Tổng" not in text and "RUB" not in text and text.count("₽") == 1  # no order total; only the flat fee notice has an amount
 
 
 def test_build_customer_message_notes_a_reduced_quantity():
@@ -129,7 +129,7 @@ def test_send_arrival_notifications_marks_only_confirmed_chats_as_notified(conn,
     refreshed = [o for o in list_online_orders(conn) if o["id"] == order["id"]][0]
     assert refreshed["arrival_notified_at"] is not None
     assert captured[0]["messages"][0]["chat_id"] == "111"
-    assert "₽" not in captured[0]["messages"][0]["text"]
+    assert "Tổng" not in captured[0]["messages"][0]["text"]  # no order total (the fee notice has its own flat amount)
 
 
 def test_send_arrival_notifications_does_not_mark_a_chat_the_worker_reports_failed(conn, monkeypatch):
@@ -206,3 +206,52 @@ def test_send_arrival_notifications_does_nothing_when_nothing_pending(conn, monk
 
     result = send_arrival_notifications(conn, batch_id, "https://example.test", "secret")
     assert result == {"sent": [], "failed": []}
+
+
+# ---- pickup reminders (24h after "hàng đã về", no invoice yet) ----
+
+
+def test_pickup_reminders_only_after_24h_unreminded_and_still_pending(conn, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    from shop.core.arrival_notify import prepare_pickup_reminders, send_pickup_reminders
+
+    _seed_batch(conn, monkeypatch)
+    order_id = list_online_orders(conn)[0]["id"]
+    now = datetime(2026, 11, 6, 12, 0, tzinfo=timezone.utc)
+
+    assert prepare_pickup_reminders(conn, now) == []  # never notified yet
+
+    def notified_ago(hours):
+        conn.execute(
+            "UPDATE online_orders SET arrival_notified_at = ? WHERE id = ?",
+            ((now - timedelta(hours=hours)).isoformat(), order_id),
+        )
+        conn.commit()
+
+    notified_ago(23)
+    assert prepare_pickup_reminders(conn, now) == []
+    notified_ago(25)
+    assert [m["online_order_id"] for m in prepare_pickup_reminders(conn, now)] == [order_id]
+
+    # the Worker confirms -> marked, not nagged twice within 24h
+    monkeypatch.setattr(
+        "urllib.request.urlopen", _fake_urlopen({"results": [{"chat_id": "111", "ok": True}]})
+    )
+    assert len(send_pickup_reminders(conn, "https://example.test", "secret", now=now)["sent"]) == 1
+    assert prepare_pickup_reminders(conn, now) == []  # not twice within 24h
+    from datetime import timedelta
+    assert len(prepare_pickup_reminders(conn, now + timedelta(hours=25))) == 1  # but repeatable later
+
+    # converted to an invoice (customer picked up) -> no reminder
+    conn.execute("UPDATE online_orders SET pickup_reminded_at = NULL, status = 'da_tao_hoa_don' WHERE id = ?", (order_id,))
+    conn.commit()
+    assert prepare_pickup_reminders(conn, now) == []
+
+
+def test_arrival_message_carries_the_flat_delivery_fee_notice_only_when_something_was_delivered():
+    delivered = [{"name_at_order": "Bún khô", "qty": 2, "original_qty": None, "excluded": False}]
+    text = build_customer_message(delivered)
+    assert "sau 2 ngày" in text and "100 ₽" in text
+    nothing = build_customer_message([{"name_at_order": "Bún khô", "qty": 2, "original_qty": None, "excluded": True}])
+    assert "100 ₽" not in nothing  # nothing to collect -> no fee warning

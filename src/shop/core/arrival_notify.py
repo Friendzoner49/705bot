@@ -37,6 +37,16 @@ def _fmt_qty(n: float) -> str:
     return f"{n:g}"
 
 
+# Flat delivery fee (owner's decision 06/11/2026): after 2 days uncollected the shop
+# delivers to the door and charges this. Keep the Worker's reminder text
+# (bot/src/pickupReminders.js) in the same wording.
+DELIVERY_FEE_RUB = 100
+DELIVERY_FEE_NOTICE = (
+    f"⏰ Nếu sau 2 ngày kể từ hôm nay bạn chưa tới nhận, shop sẽ giao tận nơi (ship tận giường) "
+    f"và tính phí dịch vụ {DELIVERY_FEE_RUB} ₽. Xin cảm ơn!"
+)
+
+
 def build_customer_message(lines: list[dict]) -> str:
     """Pure function (no DB/network) so it's easy to test and to review
     by eye. `lines` is get_online_order_lines()'s own shape -- only this
@@ -58,6 +68,8 @@ def build_customer_message(lines: list[dict]) -> str:
             parts.append(f"• {l['name_at_order']}: {_fmt_qty(l['qty'])}")
     for l in missing:
         parts.append(f"❌ {l['name_at_order']}: đợt này không có")
+    parts.append("")
+    parts.append(DELIVERY_FEE_NOTICE)
     return "\n".join(parts)
 
 
@@ -81,6 +93,9 @@ def prepare_arrival_messages(conn: sqlite3.Connection, batch_id: int) -> list[di
                 "telegram_chat_id": chat_id,
                 "customer_label": label,
                 "text": build_customer_message(lines),
+                # The Worker auto-reminds these 24h later (bot/src/pickupReminders.js);
+                # an order with nothing delivered must never get a "come pick up" nudge.
+                "remind": any(not l["excluded"] for l in lines),
             }
         )
     return out
@@ -92,6 +107,68 @@ def _chunks(items, size):
 
 
 def send_arrival_notifications(conn: sqlite3.Connection, batch_id: int, worker_url: str, sync_secret: str, timeout: float = 30.0) -> dict:
+    if not worker_url or not sync_secret:
+        raise NotifyError(_NO_SYNC_MSG)
+    return _send_messages(
+        conn, prepare_arrival_messages(conn, batch_id), worker_url, sync_secret, timeout, "arrival_notified_at"
+    )
+
+
+_NO_SYNC_MSG = (
+    "Chưa cài đặt đồng bộ: cần nhập Worker URL và Mã đồng bộ trước "
+    '(tab "Đơn hàng online" → "Cài đặt đồng bộ…").'
+)
+REMINDER_AFTER_HOURS = 24
+
+
+def build_pickup_reminder_message(arrived_at: str) -> str:
+    """Manual reminder (the button), for customers who still haven't come
+    after the Worker's automatic 24h one. Wording fits any delay."""
+    day = datetime.fromisoformat(arrived_at).strftime("%d/%m")
+    return (
+        f"⏰ Hàng bạn đặt đã về từ ngày {day} mà bạn vẫn chưa tới nhận, bạn nhớ tới nhận sớm nhé.\n"
+        f"Nếu không tới nhận được, shop sẽ giao tận nơi và tính phí dịch vụ {DELIVERY_FEE_RUB} ₽."
+    )
+
+
+def prepare_pickup_reminders(conn: sqlite3.Connection, now: datetime | None = None) -> list[dict]:
+    """Orders whose "hàng đã về" DM went out >= 24h ago, that still have no
+    invoice (status cho_xu_ly = customer hasn't picked up), haven't been
+    reminded yet, and actually had something delivered."""
+    now = now or datetime.now(timezone.utc)
+    rows = conn.execute(
+        "SELECT id, telegram_chat_id, customer_label, arrival_notified_at, pickup_reminded_at FROM online_orders "
+        "WHERE status = 'cho_xu_ly' AND arrival_notified_at IS NOT NULL ORDER BY id"
+    ).fetchall()
+    out = []
+    for order_id, chat_id, label, notified_at, reminded_at in rows:
+        age_h = (now - datetime.fromisoformat(notified_at)).total_seconds() / 3600
+        if age_h < REMINDER_AFTER_HOURS:
+            continue
+        # Repeatable on purpose (owner nudges again for customers who stay
+        # away for days), but not twice within 24h.
+        if reminded_at and (now - datetime.fromisoformat(reminded_at)).total_seconds() / 3600 < REMINDER_AFTER_HOURS:
+            continue
+        if all(l["excluded"] for l in get_online_order_lines(conn, order_id)):
+            continue
+        out.append(
+            {
+                "online_order_id": order_id,
+                "telegram_chat_id": chat_id,
+                "customer_label": label,
+                "text": build_pickup_reminder_message(notified_at),
+            }
+        )
+    return out
+
+
+def send_pickup_reminders(conn: sqlite3.Connection, worker_url: str, sync_secret: str, timeout: float = 30.0, now: datetime | None = None) -> dict:
+    if not worker_url or not sync_secret:
+        raise NotifyError(_NO_SYNC_MSG)
+    return _send_messages(conn, prepare_pickup_reminders(conn, now), worker_url, sync_secret, timeout, "pickup_reminded_at")
+
+
+def _send_messages(conn, messages, worker_url, sync_secret, timeout, mark_column) -> dict:
     """Sends every pending "hàng đã về" DM for this batch. Marks
     arrival_notified_at ONLY for chat_ids the Worker explicitly confirms
     -- an undeployed Worker's catch-all route answers any unknown path
@@ -101,13 +178,6 @@ def send_arrival_notifications(conn: sqlite3.Connection, batch_id: int, worker_u
     {"sent": [...], "failed": [...]} -- failed entries (e.g. the
     customer blocked the bot, HTTP 403 from Telegram) are for the owner
     to contact by hand, see bot/README.md."""
-    if not worker_url or not sync_secret:
-        raise NotifyError(
-            "Chưa cài đặt đồng bộ: cần nhập Worker URL và Mã đồng bộ trước "
-            '(tab "Đơn hàng online" → "Cài đặt đồng bộ…").'
-        )
-
-    messages = prepare_arrival_messages(conn, batch_id)
     if not messages:
         return {"sent": [], "failed": []}
 
@@ -116,7 +186,18 @@ def send_arrival_notifications(conn: sqlite3.Connection, batch_id: int, worker_u
     failed: list[dict] = []
     for chunk in _chunks(messages, _CHUNK_SIZE):
         body = json.dumps(
-            {"messages": [{"chat_id": m["telegram_chat_id"], "text": m["text"]} for m in chunk]}
+            {
+                "messages": [
+                    {
+                        "chat_id": m["telegram_chat_id"],
+                        "text": m["text"],
+                        "order_id": m["online_order_id"],
+                        "label": m["customer_label"],
+                        "remind": m.get("remind", False),
+                    }
+                    for m in chunk
+                ]
+            }
         ).encode("utf-8")
         req = urllib.request.Request(
             url,
@@ -157,7 +238,7 @@ def send_arrival_notifications(conn: sqlite3.Connection, batch_id: int, worker_u
             result = results_by_chat.get(m["telegram_chat_id"])
             if result is not None and result.get("ok"):
                 conn.execute(
-                    "UPDATE online_orders SET arrival_notified_at = ? WHERE id = ?", (_now(), m["online_order_id"])
+                    f"UPDATE online_orders SET {mark_column} = ? WHERE id = ?", (_now(), m["online_order_id"])
                 )
                 sent.append(m)
             else:

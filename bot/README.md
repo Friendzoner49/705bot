@@ -389,6 +389,19 @@ nhập với đúng đợt đơn khách tương ứng → bấm nút gửi thôn
 thiếu/thừa so với tổng đã đặt, app tự mở màn hình để bạn chỉnh lại từng đơn
 khách bị ảnh hưởng trước khi gửi.
 
+**Đăng thông báo "đơn đã về" lên kênh** (`POST /channel/text`, dùng chung
+`SYNC_SECRET` và `CHANNEL_CHAT_ID` với "Đăng lên kênh"): từ cửa sổ "Duyệt đợt
+hàng" trong app, bot đăng bài chữ (dòng đầu in đậm) lên kênh. Cần
+`npx wrangler deploy` lại; bot phải là Admin có quyền Post Messages (mục 14).
+
+**Tự động nhắc khách chưa tới nhận sau 24 giờ** (`src/pickupReminders.js`):
+sau khi gửi "hàng đã về", bot nhắn riêng cho admin 1 tin có nút "✅ Đã lấy: …"
+cho từng khách; khách nào chưa được bấm sau 24 giờ thì bot tự nhắc (Cron
+Trigger chạy mỗi giờ 06:00–17:00 UTC = 09:00–20:00 Saint Petersburg, tối đa
+40 tin/lần). Cần **`npx wrangler deploy` lại** để cron có hiệu lực (khai báo
+trong `wrangler.toml`, mục `[triggers]`, không cần secret mới). Chỉ
+`ADMIN_CHAT_ID` bấm được nút ✅.
+
 ## Vận hành hằng ngày
 
 ### Đồng bộ đơn hàng online vào app quản lý

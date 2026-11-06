@@ -29,3 +29,23 @@ def test_deleting_a_payment_restores_debt(conn):
     delete_payment(conn, payment_id)
     assert customer_debt(conn, cust) == 1000
     assert list_payments(conn, cust) == []
+
+
+def test_unpaid_invoices_allocates_payments_oldest_first(conn):
+    from shop.core import invoices as inv
+    from shop.core.customers import add_customer
+    from shop.core.payments import add_payment
+    from shop.core.products import upsert_product
+    from shop.core.summary import unpaid_invoices
+
+    upsert_product(conn, "TST01", "Hàng thử", "gói", 100, source="t")
+    cid = add_customer(conn, "Khách thử", default_markup_pct=0)
+    ids = []
+    for day in ("2026-11-01", "2026-11-02", "2026-11-03"):
+        invoice_id = inv.create_invoice(conn, cid, invoice_date=day)
+        inv.add_line(conn, invoice_id, "TST01", qty=3, markup_pct=0)  # 300 each
+        inv.finalize_invoice(conn, invoice_id)
+        ids.append(invoice_id)
+    assert [u["remaining"] for u in unpaid_invoices(conn, cid)] == [300, 300, 300]
+    add_payment(conn, cid, 450)  # settles #1 and half of #2
+    assert [(u["id"], u["remaining"]) for u in unpaid_invoices(conn, cid)] == [(ids[1], 150), (ids[2], 300)]

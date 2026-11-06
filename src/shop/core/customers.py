@@ -12,22 +12,22 @@ def _now() -> str:
 
 
 def list_customers(conn: sqlite3.Connection, active_only: bool = True) -> list[dict]:
-    sql = "SELECT id, name, address, contact, default_markup_pct, opening_balance, note, active FROM customers"
+    sql = "SELECT id, name, address, contact, default_markup_pct, opening_balance, note, active, internal FROM customers"
     if active_only:
         sql += " WHERE active = 1"
     sql += " ORDER BY name COLLATE VNAME"
-    cols = ["id", "name", "address", "contact", "default_markup_pct", "opening_balance", "note", "active"]
+    cols = ["id", "name", "address", "contact", "default_markup_pct", "opening_balance", "note", "active", "internal"]
     return [dict(zip(cols, row)) for row in conn.execute(sql)]
 
 
 def get_customer(conn: sqlite3.Connection, customer_id: int) -> dict | None:
     row = conn.execute(
-        "SELECT id, name, address, contact, default_markup_pct, opening_balance, note, active FROM customers WHERE id = ?",
+        "SELECT id, name, address, contact, default_markup_pct, opening_balance, note, active, internal FROM customers WHERE id = ?",
         (customer_id,),
     ).fetchone()
     if row is None:
         return None
-    cols = ["id", "name", "address", "contact", "default_markup_pct", "opening_balance", "note", "active"]
+    cols = ["id", "name", "address", "contact", "default_markup_pct", "opening_balance", "note", "active", "internal"]
     return dict(zip(cols, row))
 
 
@@ -39,13 +39,14 @@ def add_customer(
     default_markup_pct: float = float(PUBLIC_MARKUP_PCT),
     opening_balance: int = 0,
     note: str | None = None,
+    internal: int = 0,
 ) -> int:
     cur = conn.execute(
         """
-        INSERT INTO customers (name, address, contact, default_markup_pct, opening_balance, note, active, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+        INSERT INTO customers (name, address, contact, default_markup_pct, opening_balance, note, active, created_at, internal)
+        VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
         """,
-        (name, address, contact, default_markup_pct, opening_balance, note, _now()),
+        (name, address, contact, default_markup_pct, opening_balance, note, _now(), internal),
     )
     conn.commit()
     return cur.lastrowid
@@ -77,7 +78,7 @@ def delete_customer(conn: sqlite3.Connection, customer_id: int) -> None:
 def update_customer(conn: sqlite3.Connection, customer_id: int, **fields) -> None:
     if not fields:
         return
-    allowed = {"name", "address", "contact", "default_markup_pct", "opening_balance", "note", "active"}
+    allowed = {"name", "address", "contact", "default_markup_pct", "opening_balance", "note", "active", "internal"}
     unknown = set(fields) - allowed
     if unknown:
         raise ValueError(f"Unknown customer field(s): {unknown}")

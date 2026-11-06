@@ -35,14 +35,18 @@ from shop.core.products import get_product
 from shop.core.supplier_invoices import (
     add_line,
     apply_invoice,
+    auto_convert_wholesale,
+    below_cost_overrides,
     create_invoice,
-    get_alias,
+    find_known_match,
     get_invoice,
     known_lines,
     line_cost_preview,
     remove_line,
+    render_pdf_first_page,
     set_paid,
     suggest_matches,
+    suggest_wholesale_conversion,
     update_line,
 )
 from shop.ocr.vision import DEFAULT_MODEL, VisionOcrParseError, VisionOcrUnavailable, read_invoice_rows
@@ -407,6 +411,14 @@ class SupplierInvoiceDialog(QDialog):
         row_buttons.addWidget(add_known_btn)
         row_buttons.addWidget(remove_row_btn)
         row_buttons.addWidget(suggest_btn)
+        wholesale_btn = QPushButton("Tự quy đổi giá sỉ")
+        wholesale_btn.setToolTip(
+            "Hóa đơn NCC thường ghi giá cả bao/thùng (giá sỉ), còn danh mục tính theo kg/gói lẻ.\n"
+            "Bấm để app tự điền cột \"Quy đổi\" (vd. bao gạo 5kg → 5) cho các dòng đã khớp mã mà giá trên hóa đơn\n"
+            "rõ ràng là giá cả bao. Dòng nào bạn đã tự sửa Quy đổi thì không bị đổi."
+        )
+        wholesale_btn.clicked.connect(self.convert_wholesale)
+        row_buttons.addWidget(wholesale_btn)
 
         self.total_label = QLabel()
         self.total_label.setWordWrap(True)
@@ -443,13 +455,32 @@ class SupplierInvoiceDialog(QDialog):
 
     # ---- photo ----
     def choose_photo(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Chọn ảnh hóa đơn", "", "Ảnh (*.jpg *.jpeg *.png)")
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Chọn ảnh hoặc file PDF hóa đơn", "", "Ảnh hoặc PDF (*.jpg *.jpeg *.png *.pdf)"
+        )
         if not path:
             return
         src = Path(path)
-        dest_name = f"{self.invoice_id}-{src.name}"
-        dest = supplier_invoices_dir() / dest_name
-        shutil.copy(src, dest)
+        if src.suffix.lower() == ".pdf":
+            # PDF scan: render page 1 to a PNG copy; the PDF is left as is.
+            dest_name = f"{self.invoice_id}-{src.stem}.png"
+            dest = supplier_invoices_dir() / dest_name
+            try:
+                page_count = render_pdf_first_page(src, dest)
+            except Exception as exc:
+                QMessageBox.warning(self, "Không mở được PDF", f"Không đọc được file PDF này:\n{exc}")
+                return
+            if page_count > 1:
+                QMessageBox.information(
+                    self,
+                    "PDF nhiều trang",
+                    f"File có {page_count} trang -- app chỉ lấy trang 1. Với các trang sau, "
+                    "hãy tạo hóa đơn nhà cung cấp riêng cho từng trang.",
+                )
+        else:
+            dest_name = f"{self.invoice_id}-{src.name}"
+            dest = supplier_invoices_dir() / dest_name
+            shutil.copy(src, dest)
         self.conn.execute("UPDATE supplier_invoices SET photo_filename = ? WHERE id = ?", (dest_name, self.invoice_id))
         self.conn.commit()
         self._image_path = dest
@@ -569,10 +600,12 @@ class SupplierInvoiceDialog(QDialog):
             return
         for row in self._vision_rows:
             raw_name = row["name_latin"] or row["name_ru"]
-            # Only an EXACT past-confirmed alias pre-fills matched_code --
-            # never a fuzzy guess (suggest_matches' scored candidates
-            # still need the user to pick, via "Gợi ý mã hàng").
-            alias = get_alias(self.conn, raw_name)
+            # Pre-fills matched_code only from what the owner already
+            # confirmed (remembered names, or a clearly-closest wording of
+            # one) -- never from the loose word-overlap candidates of
+            # "Gợi ý mã hàng". Still a draft: nothing is priced until
+            # "Áp dụng giá mới".
+            alias = find_known_match(self.conn, row["name_latin"], row["name_ru"], row["unit_price"])
             add_line(
                 self.conn,
                 self.invoice_id,
@@ -782,8 +815,32 @@ class SupplierInvoiceDialog(QDialog):
         picker = _MatchPickerDialog(self, matches, list_products(self.conn, active_only=True))
         if picker.exec() and picker.selected_code:
             line_id = self._line_ids[row]
-            update_line(self.conn, line_id, matched_code=picker.selected_code, unit_conversion=picker.selected_conversion)
+            conversion = picker.selected_conversion
+            if conversion == 1.0:
+                price_text = self.table.item(row, COL_PRICE).text().strip().replace(",", ".")
+                try:
+                    price = float(price_text) if price_text else None
+                except ValueError:
+                    price = None
+                conversion = suggest_wholesale_conversion(self.conn, picker.selected_code, price)
+            update_line(self.conn, line_id, matched_code=picker.selected_code, unit_conversion=conversion)
             self.refresh()
+
+    def convert_wholesale(self):
+        changed = auto_convert_wholesale(self.conn, self.invoice_id)
+        self.refresh()
+        if not changed:
+            QMessageBox.information(
+                self, "Quy đổi giá sỉ",
+                "Không có dòng nào cần quy đổi (hoặc chưa khớp mã hàng / đã có hệ số Quy đổi).",
+            )
+            return
+        names = "\n".join(f"- {c['matched_code']}: giá hóa đơn chia {c['unit_conversion']:g}" for c in changed)
+        QMessageBox.information(
+            self, "Đã quy đổi giá sỉ",
+            f"Đã điền Quy đổi cho {len(changed)} dòng:\n{names}\n\n"
+            "Xem lại cột Giá cũ / Giá mới / Δ%, sửa tay nếu sai.",
+        )
 
     def apply_changes(self):
         invoice = get_invoice(self.conn, self.invoice_id)
@@ -883,6 +940,13 @@ class SupplierInvoiceDialog(QDialog):
                 f"\n\n⚠ {len(stale)} hóa đơn khách đang NHÁP có chứa mặt hàng vừa đổi giá — "
                 "kiểm tra lại cột \"Giá vốn\" của dòng đó trước khi hoàn tất, nếu không lợi nhuận sẽ tính sai."
             )
+        losing = below_cost_overrides(self.conn, changed_codes)
+        if losing:
+            names = "\n".join(
+                f"- {x['code']}: giá sỉ ngoại lệ {x['override']:,} < giá vốn cả bao {x['cost_total']:,.0f}".replace(",", ".")
+                for x in losing
+            )
+            msg += f"\n\n⚠ Giá sỉ ngoại lệ đang THẤP HƠN giá vốn mới (bán lỗ) — vào Danh mục hàng chỉnh lại:\n{names}"
         msg += '\n\nGiá công khai trên website KHÔNG tự đổi theo — bấm "Cập nhật website giá" ở tab Danh mục hàng nếu muốn.'
         QMessageBox.information(self, "Đã áp dụng", msg)
         self.refresh()

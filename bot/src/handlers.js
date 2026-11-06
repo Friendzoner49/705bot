@@ -5,6 +5,7 @@ import { getRememberedCustomer, rememberCustomer, forgetCustomer } from "./custo
 import { getOrderHistory, recordOrderHistory, buildPersonalizedSiteUrl } from "./orderHistory.js";
 import { recordAdminMessage, takeDeletableAdminMessages } from "./adminMessageLog.js";
 import { recordSyncOrder } from "./onlineOrdersSync.js";
+import { markPickedUp, PICKUP_CALLBACK_PREFIX } from "./pickupReminders.js";
 import { recordSupplierPhoto } from "./supplierPhotoSync.js";
 import { orderLines, buildOrderText, lineTotal } from "./cart.js";
 import { parseCodeOrderLines, parseWebAppOrderLines } from "./orderParser.js";
@@ -119,8 +120,47 @@ export async function handleUpdate(update, env) {
 // (a stale button from before this bot stopped having interactive
 // menus, or from before this flow existed) falls back to the same
 // welcome everyone else gets.
+// Admin-only "✅ Đã lấy: <khách>" button on the "đã báo hàng về" message
+// (pickupReminders.js). Handled BEFORE the generic path below, which
+// would strip the WHOLE keyboard on the first tap -- here each customer
+// has their own button and only the tapped one should disappear.
+async function handlePickupTap(query, ctx) {
+  const { tg, env } = ctx;
+  const isAdmin = env.ADMIN_CHAT_ID && String(query.from?.id) === env.ADMIN_CHAT_ID;
+  if (!isAdmin) {
+    try {
+      await tg.answerCallbackQuery(query.id);
+    } catch (_err) {
+      // expired -- harmless
+    }
+    return;
+  }
+  const orderId = query.data.slice(PICKUP_CALLBACK_PREFIX.length);
+  await markPickedUp(env, orderId);
+  try {
+    await tg.answerCallbackQuery(query.id, { text: "Đã ghi nhận, bot sẽ không nhắc khách này." });
+  } catch (_err) {
+    // expired -- harmless
+  }
+  const message = query.message;
+  if (message?.chat?.id != null && message.message_id != null) {
+    const remaining = (message.reply_markup?.inline_keyboard || []).filter(
+      (row) => !row.some((b) => b.callback_data === query.data),
+    );
+    try {
+      await tg.editMessageReplyMarkup(message.chat.id, message.message_id, { inline_keyboard: remaining });
+    } catch (_err) {
+      // stale -- fine
+    }
+  }
+}
+
 async function handleCallbackQuery(query, ctx) {
   const { tg } = ctx;
+  if (typeof query.data === "string" && query.data.startsWith(PICKUP_CALLBACK_PREFIX)) {
+    await handlePickupTap(query, ctx);
+    return;
+  }
   const chatId = query.message?.chat?.id;
   const chatType = query.message?.chat?.type || "private";
 
@@ -202,6 +242,7 @@ function buildOrderFromCodeQty(pairs, items) {
 // it's a member, via @BotFather) so Telegram actually forwards photo
 // messages at all -- see bot/README.md.
 const SUPPLIER_PHOTO_COMMAND = "/hangve";
+const PDF_MIME = "application/pdf";
 
 async function handleSupplierGroupMessage(message, ctx) {
   const { tg, env } = ctx;
@@ -224,8 +265,9 @@ async function handleSupplierGroupMessage(message, ctx) {
   // File" can deliver image/heic, which Qt on the app side can't
   // decode (a blank image, OCR gets nothing, with no error shown) --
   // better to ask for a supported type up front than fail silently later.
-  const DOCUMENT_MIME_TYPES = ["image/jpeg", "image/png"];
+  const DOCUMENT_MIME_TYPES = ["image/jpeg", "image/png", PDF_MIME];
   let fileId, fileUniqueId;
+  let isPdf = false;
   if (message.photo && message.photo.length > 0) {
     const largest = message.photo[message.photo.length - 1];
     fileId = largest.file_id;
@@ -233,6 +275,7 @@ async function handleSupplierGroupMessage(message, ctx) {
   } else if (message.document && DOCUMENT_MIME_TYPES.includes(message.document.mime_type)) {
     fileId = message.document.file_id;
     fileUniqueId = message.document.file_unique_id;
+    isPdf = message.document.mime_type === PDF_MIME;
   } else if (message.document) {
     await tg.sendMessage(chatId, 'Gửi dạng Ảnh (Photo) -- định dạng file này app chưa đọc được.');
     return;
@@ -249,13 +292,20 @@ async function handleSupplierGroupMessage(message, ctx) {
     const bytes = await tg.downloadFile(file.file_path);
     await recordSupplierPhoto(env, {
       note,
-      dataBase64: arrayBufferToBase64(bytes),
+      // A PDF is kept as RAW bytes (no base64): encoding several MB would
+      // blow the free tier's ~10ms CPU budget per request.
+      ...(isPdf ? { rawBytes: bytes } : { dataBase64: arrayBufferToBase64(bytes) }),
       messageDateSec: message.date,
       fileUniqueId,
+      mime: isPdf ? PDF_MIME : undefined,
+      replyChatId: isPdf ? chatId : undefined,
+      replyToMessageId: isPdf ? message.message_id : undefined,
     });
     await tg.sendMessage(
       chatId,
-      'Đã nhận ảnh hóa đơn ✅ -- sẽ hiện trong app khi bạn mở lên và bấm "Đồng bộ ảnh từ Telegram".',
+      isPdf
+        ? 'Đã nhận file PDF ✅ -- khi bạn mở app và bấm "Đồng bộ từ Telegram", app sẽ tự đổi sang ảnh nét và gửi lại ngay trong nhóm này.'
+        : 'Đã nhận ảnh hóa đơn ✅ -- sẽ hiện trong app khi bạn mở lên và bấm "Đồng bộ từ Telegram".',
     );
   } catch (_err) {
     await tg.sendMessage(chatId, "Không lưu được ảnh này, thử gửi lại.");

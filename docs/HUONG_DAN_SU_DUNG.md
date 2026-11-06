@@ -154,7 +154,9 @@ trạng còn/hết hàng).
 
 - **Thêm khách hàng** — tên, địa chỉ, liên hệ, % markup riêng (mặc định
   7%, có thể để cao/thấp hơn cho từng khách), công nợ đầu kỳ nếu có.
-- **Sửa** — chọn 1 khách rồi bấm.
+- **Sửa** — chọn 1 khách rồi bấm. Tích **"Dùng nội bộ (chính tôi)"** cho
+  khách là chính bạn: hóa đơn lấy giá gốc (markup 0%), và khách này **không
+  tính vào công nợ, lợi nhuận, Tổng quan**, không hiện trong Công nợ & Lợi nhuận, và luôn được coi là ĐÃ thanh toán (công nợ hiện 0, không cần "Ghi nhận thanh toán").
 - **Ngừng/Mở hoạt động** — ẩn khách không còn giao dịch nữa, không xóa dữ
   liệu cũ.
 - **🗑 Xóa khách hàng** — chỉ xóa được khách **chưa có hóa đơn/thanh toán
@@ -193,6 +195,21 @@ bán, tính công nợ + lợi nhuận).
 Ở tab **Hóa đơn** (danh sách), **Mở hóa đơn** để mở lại 1 hóa đơn đã tạo
 trước đó.
 
+**📨 Gửi hóa đơn cho khách (Telegram):** chọn 1 hóa đơn **đã hoàn tất** rồi bấm
+nút này — app gửi bản tóm tắt bằng chữ (các dòng hàng, tổng tiền, công nợ hiện
+tại) cho đúng khách đó qua bot. Khách phải đã liên kết Telegram (tự có khi bạn
+tạo hóa đơn từ đơn online của khách đó). Có hỏi xác nhận trước khi gửi; cột
+"Đã gửi Telegram" cho biết hóa đơn nào đã gửi, gửi lại sẽ có cảnh báo. Dùng
+chung "Cài đặt đồng bộ…" của tab Đơn hàng online, không cần cài thêm gì.
+Khách chưa liên kết bot: bấm **📋 Copy nội dung hóa đơn** rồi dán (Ctrl+V) vào
+Zalo/Telegram gửi tay cho khách.
+
+**Ghi nhận thanh toán theo hóa đơn:** ở tab Khách hàng, chọn khách → "Ghi nhận
+thanh toán". Hộp thoại liệt kê các hóa đơn khách còn nợ (tiền đã trả được trừ
+dần từ hóa đơn cũ nhất); **tích đúng hóa đơn khách vừa trả** thì số tiền và ghi
+chú tự điền, không phải gõ số lẻ. Có thêm nút "Trả hết công nợ". Số tiền vẫn
+sửa tay được.
+
 **Thêm phí dịch vụ…** (trong màn hình sửa hóa đơn, cạnh "Thêm dòng") —
 thêm 1 dòng KHÔNG phải mặt hàng trong danh mục, tự gõ tên + giá (vd "Phí
 vận chuyển", "Phí đóng gói"). Giá tự gõ = 100% tính vào lợi nhuận (không
@@ -204,7 +221,20 @@ hàng) mà số lượng trên dòng hóa đơn đạt tới mức đó sẽ t�
 trên website. Dòng này tự thêm/xóa lại mỗi khi bạn sửa số lượng của
 dòng hàng chính, không cần tự tính tay.
 
+**Giá sỉ ngoại lệ:** mặc định giá cả bao/thùng = giá lẻ × số lượng × 0,98.
+Muốn giá khác cho 1 mặt hàng: Danh mục hàng → bấm đúp mặt hàng → tích
+**"Thêm ngoại lệ giá sỉ"** và gõ giá BÁN cả bao/thùng (cố định, mọi khách như
+nhau). Bỏ tích để về công thức. Giá này dùng cho hóa đơn, website, bot và Excel;
+**phải bấm "Cập nhật website giá" và deploy lại bot** thì khách mới thấy. Không
+bao giờ tính cao hơn giá lẻ × số lượng. Khách "Dùng nội bộ" không có chiết
+khấu sỉ (đúng giá gốc).
+
 ### Hóa đơn nhà cung cấp
+
+**🗑 Xóa hóa đơn:** chọn 1 hóa đơn rồi bấm nút này (có hỏi xác nhận). Chỉ xóa
+hóa đơn và các dòng của nó; giá vốn đã áp dụng vào danh mục vẫn giữ nguyên, file
+ảnh/PDF gốc vẫn còn trong thư mục dữ liệu. Hóa đơn lấy từ Telegram đã xóa sẽ
+không bị kéo về lại ở lần "Đồng bộ từ Telegram" sau.
 
 Ghi lại từng đợt hàng nhập về — vừa để biết nợ nhà cung cấp bao nhiêu, vừa
 để so sánh giá có tăng không và tự động cập nhật giá vốn trong danh mục.
@@ -221,7 +251,10 @@ Ghi lại từng đợt hàng nhập về — vừa để biết nợ nhà cung 
 4. Gõ từng dòng hàng vào bảng: tên trên hóa đơn, số lượng, đơn vị, đơn
    giá, **hệ số quy đổi** (quan trọng — nếu hóa đơn ghi giá theo "1 thùng
    = 30 gói", phải gõ 30 vào ô "Quy đổi" thì app mới tính đúng giá/gói,
-   không thì sẽ hiểu nhầm giá tăng vọt).
+   không thì sẽ hiểu nhầm giá tăng vọt). **Giá sỉ cả bao** (vd. bao gạo 5kg
+   giá 1400₽, danh mục tính theo kg): bấm **"Tự quy đổi giá sỉ"** — app tự điền
+   Quy đổi = 5 cho các dòng đã khớp mã mà giá hóa đơn rõ ràng là giá cả bao,
+   để so với giá/kg trong danh mục. Dòng bạn đã tự sửa Quy đổi thì giữ nguyên.
    > **Thêm mặt hàng quen thuộc** — thay vì gõ tay từ đầu mỗi lần, bấm nút
    > này để hiện danh sách mặt hàng bạn đã từng khớp mã trước đây (mua
    > nhiều đợt nhất lên đầu) — tích vào đúng mặt hàng CÓ trong ảnh đang
@@ -239,12 +272,18 @@ Ghi lại từng đợt hàng nhập về — vừa để biết nợ nhà cung 
 8. **Đánh dấu ĐÃ thanh toán cho NCC** — khi đã trả tiền nhà cung cấp cho
    đợt hàng này (số "Bạn nợ nhà cung cấp" ở tab Tổng quan sẽ giảm theo).
 
-**🔄 Đồng bộ ảnh từ Telegram** (tùy chọn, cần cài 1 lần — xem
+**🔄 Đồng bộ từ Telegram** (tùy chọn, cần cài 1 lần — xem
 `bot/README.md` mục 13) — nếu bạn gửi ảnh hóa đơn kèm lệnh `/hangve` trong
 1 group Telegram riêng, bấm nút này để kéo ảnh đó về thành 1 hóa đơn mới
 (có sẵn ảnh + cột "Ghi chú" lấy từ caption bạn gõ), rồi mở lên làm các bước
 2-8 ở trên như bình thường. Không có gì tự động ghi vào giá vốn — phải tự
 mở app và bấm "Áp dụng giá mới vào danh mục" mới có hiệu lực thật.
+
+**Gửi file PDF scan** (cũng kèm `/hangve`): bot nhận PDF; khi bạn bấm "Đồng bộ
+ảnh từ Telegram", app đổi trang 1 thành ảnh, giữ nguyên file PDF gốc, và **gửi
+lại ảnh nét (dạng file, không bị nén) vào đúng group đó** để bạn lưu vào album.
+Ảnh nét chỉ về sau khi bạn mở app và bấm đồng bộ — bot không tự đổi PDF được.
+PDF nhiều trang chỉ lấy trang 1.
 
 ### Đơn hàng online
 
@@ -315,6 +354,29 @@ Worker riêng — xem `bot/README.md` mục 15):**
    không có giá/tổng tiền (giá chỉ chốt khi bạn thật sự tạo hóa đơn ở nút
    "Tạo hóa đơn từ đơn này"). Khách nào gửi không thành công (vd đã chặn
    bot) sẽ hiện trong danh sách "cần tự liên hệ" để bạn tự nhắn tay.
+10. **📢 Đăng thông báo "đơn đã về" lên kênh** (trong cửa sổ "Duyệt đợt hàng"):
+    app soạn sẵn bài theo mẫu quen thuộc ("Đơn đầu tháng … đã về!!! Ai có nhu cầu
+    lấy liên hệ Hùng, Giang để nhận tại 705, hạn đến … Trân trọng.") — tên đợt
+    và hạn nhận điền sẵn theo ngày hôm nay (hạn = 2 ngày sau), bạn sửa tự do
+    trong khung soạn rồi bấm "Đăng lên kênh". Dòng đầu in đậm. Có hỏi xác nhận,
+    đăng xong KHÔNG thu hồi được từ app. Cần deploy lại bot một lần
+    (`npx wrangler deploy`) để có đường đăng bài chữ.
+11. **Nhắc khách chưa nhận hàng — bot tự làm, bạn không cần mở app:**
+    - Ngay khi bấm gửi "hàng đã về", bot nhắn riêng cho **bạn** 1 tin liệt
+      kê từng khách kèm nút **"✅ Đã lấy: tên khách"**.
+    - Khách nào tới lấy hàng, bạn bấm nút của khách đó **ngay trên điện
+      thoại**. Khách nào **chưa được bấm** sau **24 giờ**, bot tự nhắn nhắc
+      khách (chỉ trong giờ 9h–20h giờ Saint Petersburg, mỗi khách 1 lần):
+      sang ngày mai (2 ngày kể từ lúc hàng về) chưa tới thì shop giao tận nơi và tính phí
+      dịch vụ **100 ₽** (phí chung, không chia mức). Tin "hàng đã về" của từng khách cũng
+      ghi sẵn câu này.
+    - ⚠ Quên bấm "✅ Đã lấy" thì khách đã lấy hàng vẫn bị nhắc nhầm — nhớ bấm.
+    - Việc **gửi tin "hàng đã về"** vẫn phải làm 1 lần trong app (cần nối
+      hóa đơn NCC và chỉnh thiếu/thừa trước), chỉ phần nhắc 24 giờ là tự động.
+    - **Nút "⏰ Nhắc khách chưa nhận hàng…"** (tab Đơn hàng online) để bạn
+      tự bấm khi khách đã quá lâu chưa tới (sau lần bot tự nhắc). App liệt kê
+      khách chưa có hóa đơn, hỏi xác nhận rồi gửi; bấm lại được, cách nhau
+      ít nhất 24 giờ.
 
 ### Cài đặt
 
@@ -524,7 +586,7 @@ uv sync
 | Nút "Đọc bảng hàng (AI)…" báo lỗi | Chưa cài Ollama, chưa mở Ollama (chạy nền), hoặc chưa `ollama pull qwen2.5vl:7b` — xem [mục 7](#7-đọc-hóa-đơn-nhà-cung-cấp-bằng-ai-tùy-chọn). Mọi việc khác trong app vẫn dùng bình thường |
 | "Cập nhật website giá" báo lỗi | Kiểm tra máy có đang nối mạng không; thử lại sau vài phút. Dữ liệu trong app không bị ảnh hưởng dù publish lỗi |
 | "Đồng bộ ngay" (tab Đơn hàng online) báo lỗi | Kiểm tra mạng; nếu đang ở Nga có thể cần bật VPN. Đơn của khách không bị mất — bot vẫn giữ, đồng bộ lại sau vẫn lấy được |
-| Gửi ảnh `/hangve` trong group nhưng app "Đồng bộ ảnh từ Telegram" không thấy gì mới | Kiểm tra theo đúng thứ tự: (1) đã tắt "Group Privacy" cho bot chưa (@BotFather → Bot Settings — cài đặt CHUNG của cả bot, không phải riêng 1 group); (2) đã **xóa rồi thêm lại bot vào group** sau khi tắt privacy chưa (Telegram chỉ áp dụng cho lần thêm TIẾP THEO, không hồi tố); (3) caption có bắt đầu đúng bằng `/hangve` không; (4) file gửi là Ảnh (Photo) hoặc File định dạng JPG/PNG — file HEIC (hay gặp khi gửi "Send as File" từ iPhone) bị từ chối, bot sẽ báo "Gửi dạng Ảnh"; (5) gửi đúng group đã cài `SUPPLIER_GROUP_CHAT_ID` chưa — group bị Telegram tự nâng cấp lên "supergroup" sẽ đổi ID, cần `/myid` lại. Xem `bot/README.md` mục 13 |
+| Gửi ảnh `/hangve` trong group nhưng app "Đồng bộ từ Telegram" không thấy gì mới | Kiểm tra theo đúng thứ tự: (1) đã tắt "Group Privacy" cho bot chưa (@BotFather → Bot Settings — cài đặt CHUNG của cả bot, không phải riêng 1 group); (2) đã **xóa rồi thêm lại bot vào group** sau khi tắt privacy chưa (Telegram chỉ áp dụng cho lần thêm TIẾP THEO, không hồi tố); (3) caption có bắt đầu đúng bằng `/hangve` không; (4) file gửi là Ảnh (Photo) hoặc File định dạng JPG/PNG — file HEIC (hay gặp khi gửi "Send as File" từ iPhone) bị từ chối, bot sẽ báo "Gửi dạng Ảnh"; (5) gửi đúng group đã cài `SUPPLIER_GROUP_CHAT_ID` chưa — group bị Telegram tự nâng cấp lên "supergroup" sẽ đổi ID, cần `/myid` lại. Xem `bot/README.md` mục 13 |
 | Bấm "📢 Đăng lên kênh" báo lỗi | Kiểm tra: (1) đã cài `CHANNEL_CHAT_ID` chưa (`bot/README.md` mục 14); (2) bot còn quyền "Post Messages" trong kênh không (xem lại Administrators của kênh); (3) mặt hàng đã có ảnh chưa — chưa có ảnh thì không đăng được |
 | Thấy 2 đơn giống hệt nhau trong "Đơn hàng online" | Hiếm khi xảy ra nếu lần gửi trước bị lỗi rồi khách gửi lại — bấm "Hủy đơn" cho bản thừa |
 | Lỡ bấm "Khôi phục cài đặt gốc" hoặc "Nhập dữ liệu từ file" nhầm | App đã tự đóng/tự tạo 1 bản sao lưu ngay TRƯỚC khi hành động đó chạy — mở lại app, vào tab **Cài đặt → Khôi phục từ bản sao lưu**, chọn đúng bản đó |

@@ -22,6 +22,27 @@ from shop.core.products import get_product, list_products, upsert_product
 from shop.core.text import normalize
 
 
+def render_pdf_first_page(pdf_path: Path, dest_png: Path, max_side: int = 3000) -> int:
+    """Renders page 1 of a scanned-invoice PDF to a PNG (pypdfium2, pure
+    wheel -- nothing extra for the user to install). The PDF itself is
+    only read, never modified. Returns the PDF's page count so the caller
+    can warn when later pages are ignored."""
+    import pypdfium2 as pdfium
+
+    pdf = pdfium.PdfDocument(str(pdf_path))
+    try:
+        page_count = len(pdf)
+        if page_count == 0:
+            raise ValueError("File PDF không có trang nào.")
+        page = pdf[0]
+        width, height = page.get_size()
+        scale = min(1.5, max_side / max(width, height))  # 1.0 = 72 dpi
+        page.render(scale=scale).to_pil().convert("RGB").save(dest_png)
+    finally:
+        pdf.close()
+    return page_count
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -169,6 +190,14 @@ def update_line(
         (raw_name, raw_qty, raw_unit, raw_unit_price, raw_line_total, matched_code, unit_conversion, line_id),
     )
     conn.commit()
+    if matched_code:
+        # Every confirmed match is remembered right away (both printed names), so the
+        # next AI-read invoice fills this product in by itself.
+        ru = conn.execute("SELECT raw_name_ru FROM supplier_invoice_lines WHERE id = ?", (line_id,)).fetchone()[0]
+        learn_alias(
+            conn, [raw_name, ru], matched_code,
+            _line_conversion(conn, {"unit_conversion": unit_conversion, "matched_code": matched_code, "raw_unit_price": raw_unit_price}),
+        )
 
 
 def remove_line(conn: sqlite3.Connection, line_id: int) -> None:
@@ -427,21 +456,90 @@ def sync_photos_from_bot(
     inserted = 0
     photos_dir.mkdir(parents=True, exist_ok=True)
     for photo in data.get("photos", []):
-        if _insert_photo(conn, photo, photos_dir):
+        if _insert_photo(conn, photo, photos_dir, worker_url, sync_secret):
             inserted += 1
     return inserted
 
 
-def _insert_photo(conn: sqlite3.Connection, photo: dict, photos_dir: Path) -> bool:
+def _worker_request(worker_url: str, sync_secret: str, path: str, body: dict | None = None, timeout: float = 60.0) -> bytes:
+    """GET (or POST json when body is given) to the Worker with the shared secret.
+    Raises OSError-family/URLError on any failure -- callers decide what is fatal."""
+    import json
+    import urllib.request
+
+    req = urllib.request.Request(
+        worker_url.rstrip("/") + path,
+        data=json.dumps(body).encode("utf-8") if body is not None else None,
+        method="POST" if body is not None else "GET",
+        headers={
+            "X-Sync-Secret": sync_secret,
+            "User-Agent": "ShopApp-OnlineOrdersSync/1.0",  # see fetch_sync_json: Cloudflare blocks the default UA
+            "Content-Type": "application/json",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.read()
+
+
+def _insert_pdf_photo(conn, invoice_id: int, photo: dict, photos_dir: Path, worker_url: str, sync_secret: str) -> None:
+    """A "/hangve" PDF scan: download the raw PDF, keep it untouched next to the
+    rendered PNG (the PNG is what the invoice shows/OCRs), then post the sharp PNG
+    back into the Telegram group so the owner can save it to the phone's album.
+    Failures never lose the invoice row -- they are noted on it instead."""
+    import base64 as b64
+    from urllib.parse import quote
+
+    problems = []
+    try:
+        pdf_bytes = _worker_request(worker_url, sync_secret, "/sync/photo-blob?key=" + quote(photo["blob"], safe=""))
+        pdf_path = photos_dir / f"{invoice_id}-telegram.pdf"
+        pdf_path.write_bytes(pdf_bytes)
+        png_name = f"{invoice_id}-telegram.png"
+        render_pdf_first_page(pdf_path, photos_dir / png_name)
+        conn.execute("UPDATE supplier_invoices SET photo_filename = ? WHERE id = ?", (png_name, invoice_id))
+    except Exception as exc:  # noqa: BLE001 -- network/PDF errors alike: keep the draft, say why
+        problems.append(f"không tải/đổi được PDF ({exc})")
+        png_name = None
+    if png_name and photo.get("reply_chat_id"):
+        try:
+            _worker_request(
+                worker_url,
+                sync_secret,
+                "/hangve/reply",
+                {
+                    "chat_id": photo["reply_chat_id"],
+                    "reply_to_message_id": photo.get("reply_to_message_id"),
+                    "imageBase64": b64.b64encode((photos_dir / png_name).read_bytes()).decode("ascii"),
+                    "filename": f"hoa-don-{invoice_id}.png",
+                    "caption": "Ảnh nét từ file PDF vừa gửi (lưu vào album nhé).",
+                },
+            )
+        except Exception as exc:  # noqa: BLE001
+            problems.append(f"chưa gửi được ảnh nét lại Telegram ({exc})")
+    if problems:
+        note = (photo.get("note") or "").strip()
+        conn.execute(
+            "UPDATE supplier_invoices SET note = ? WHERE id = ?",
+            ((note + " | " if note else "") + "⚠ " + "; ".join(problems), invoice_id),
+        )
+    conn.commit()
+
+
+def _insert_photo(conn: sqlite3.Connection, photo: dict, photos_dir: Path, worker_url: str = "", sync_secret: str = "") -> bool:
     key = photo["key"]
     floor = _photo_sync_floor(conn)
     if floor and key <= floor:
         # Pre-reset photo the Worker returned anyway -- second line of
         # defense, same spirit as online_orders._insert_online_order.
         return False
+    if key in _deleted_photo_keys(conn):
+        return False  # the owner deleted this one -- never bring it back
     if conn.execute("SELECT 1 FROM supplier_invoices WHERE source_key = ?", (key,)).fetchone():
         return False  # already synced before
     invoice_id = create_invoice(conn, source_key=key, note=photo.get("note") or None)
+    if photo.get("blob"):
+        _insert_pdf_photo(conn, invoice_id, photo, photos_dir, worker_url, sync_secret)
+        return True
     data_b64 = photo.get("data")
     if data_b64:
         filename = f"{invoice_id}-telegram.jpg"
@@ -452,3 +550,198 @@ def _insert_photo(conn: sqlite3.Connection, photo: dict, photos_dir: Path) -> bo
     # drop the record) -- the draft still shows up with its note, the
     # owner can "Chọn ảnh…" by hand if needed.
     return True
+
+
+# ---- Wholesale (bao/thùng) prices on the supplier invoice ----
+
+
+def suggest_wholesale_conversion(conn: sqlite3.Connection, code: str, raw_unit_price: float | None) -> float:
+    """The catalog cost is per retail unit (kg, gói...), but the supplier
+    invoice often prices a whole bao/thùng. For a product with a bulk size
+    (bulk_qty > 1), if dividing the invoice price by that size lands closer
+    to the current cost than the raw price does, the invoice price is the
+    WHOLESALE price -> suggest conversion = bulk_qty. 1.0 when unsure (e.g.
+    a carton product the supplier still prices per piece), so the owner can
+    always see and edit the "Quy đổi" cell."""
+    if not raw_unit_price or raw_unit_price <= 0:
+        return 1.0
+    product = get_product(conn, code)
+    if product is None or not product["bulk_qty"] or product["bulk_qty"] <= 1 or not product["cost_price"]:
+        return 1.0
+    import math
+
+    old = product["cost_price"]
+    raw_gap = abs(math.log(raw_unit_price / old))
+    bulk_gap = abs(math.log(raw_unit_price / product["bulk_qty"] / old))
+    return float(product["bulk_qty"]) if bulk_gap < raw_gap else 1.0
+
+
+def auto_convert_wholesale(conn: sqlite3.Connection, supplier_invoice_id: int) -> list[dict]:
+    """Applies suggest_wholesale_conversion to every matched line still at
+    conversion 1 (a conversion the owner already typed is never touched).
+    Returns the changed lines for a confirmation message."""
+    changed = []
+    for line in list_lines(conn, supplier_invoice_id):
+        if not line["matched_code"] or (line["unit_conversion"] or 1.0) != 1.0:
+            continue
+        suggestion = suggest_wholesale_conversion(conn, line["matched_code"], line["raw_unit_price"])
+        if suggestion != 1.0:
+            update_line(conn, line["id"], unit_conversion=suggestion)
+            changed.append({**line, "unit_conversion": suggestion})
+    return changed
+
+
+# ---- Learning from confirmed matches, so later AI-read invoices match by themselves ----
+# The AI re-reads the same product with slightly different spelling every
+# time, so an exact-name alias alone rarely hits again. Every match the
+# owner confirms is therefore remembered under BOTH names printed on the
+# invoice (Latin and Russian), and find_known_match() also accepts a close
+# (not identical) wording -- but only when it is clearly closer to ONE
+# remembered product than to any other.
+
+_FUZZY_MIN = 0.6  # share of words that match (allowing small misspellings)
+_FUZZY_MARGIN = 0.15  # best must beat the runner-up (a different product) by this much
+
+
+def _words(text: str) -> set[str]:
+    import re
+
+    return set(re.findall(r"\w+", normalize(text or "")))
+
+
+def _soft_overlap(a: set[str], b: set[str]) -> float:
+    """Share of words that have a counterpart in the other set, where a
+    counterpart may be spelled slightly differently (the AI misreads a
+    letter or two between photos: "asecock" vs "acecook")."""
+    from difflib import SequenceMatcher
+
+    small, large = (a, b) if len(a) <= len(b) else (b, a)
+    free = set(large)
+    matched = 0
+    for word in small:
+        best = max(free, key=lambda other: SequenceMatcher(None, word, other).ratio(), default=None)
+        if best is not None and SequenceMatcher(None, word, best).ratio() >= 0.75:
+            matched += 1
+            free.discard(best)
+    return matched / max(len(a), len(b))
+
+
+
+def learn_alias(conn: sqlite3.Connection, names: list[str | None], code: str, unit_conversion: float) -> int:
+    """Remembers every non-empty name for this product. Returns how many names were saved."""
+    saved = 0
+    for name in names:
+        if name and name.strip():
+            save_alias(conn, name, code, unit_conversion)
+            saved += 1
+    return saved
+
+
+def _line_conversion(conn: sqlite3.Connection, line: dict) -> float:
+    conversion = line.get("unit_conversion") or 1.0
+    if conversion == 1.0 and line.get("matched_code"):
+        conversion = suggest_wholesale_conversion(conn, line["matched_code"], line.get("raw_unit_price"))
+    return conversion
+
+
+def learn_all_matched_lines(conn: sqlite3.Connection) -> int:
+    """Backfill: remember every already-matched line of every invoice (e.g.
+    the trial deliveries) WITHOUT touching any price or invoice line.
+    Newest invoice wins when the same name was matched twice. Returns the
+    number of matched lines learned."""
+    rows = conn.execute(
+        "SELECT id, raw_name, raw_name_ru, raw_unit_price, matched_code, unit_conversion "
+        "FROM supplier_invoice_lines WHERE matched_code IS NOT NULL ORDER BY supplier_invoice_id, id"
+    ).fetchall()
+    for line_id, raw_name, raw_name_ru, price, code, conversion in rows:
+        line = {"unit_conversion": conversion, "matched_code": code, "raw_unit_price": price}
+        learn_alias(conn, [raw_name, raw_name_ru], code, _line_conversion(conn, line))
+    return len(rows)
+
+
+def find_known_match(conn: sqlite3.Connection, name_latin: str, name_ru: str, raw_unit_price: float | None = None) -> dict | None:
+    """The product + conversion for a freshly AI-read row, or None when not sure:
+    1) exact remembered name (Latin, then Russian), 2) the product's own
+    catalog Russian name, 3) a clearly-closest remembered wording."""
+    found = get_alias(conn, name_latin) if name_latin else None
+    if found is None and name_ru:
+        found = get_alias(conn, name_ru)
+    if found is None and name_ru:
+        row = conn.execute(
+            "SELECT code FROM products WHERE name_ru != '' AND lower(name_ru) = lower(?)", (name_ru.strip(),)
+        ).fetchone()
+        if row:
+            found = {"code": row[0], "unit_conversion": 1.0}
+    if found is None:
+        mine = [w for w in (_words(name_latin), _words(name_ru)) if w]
+        best_by_code: dict[str, tuple[float, float]] = {}
+        if mine:
+            for key, code, conversion in conn.execute(
+                "SELECT raw_name_normalized, product_code, unit_conversion FROM supplier_aliases"
+            ):
+                key_words = _words(key)
+                if not key_words:
+                    continue
+                score = max(_soft_overlap(m, key_words) for m in mine)
+                if score > best_by_code.get(code, (0.0, 1.0))[0]:
+                    best_by_code[code] = (score, conversion)
+        ranked = sorted(best_by_code.items(), key=lambda kv: -kv[1][0])
+        if ranked and ranked[0][1][0] >= _FUZZY_MIN:
+            runner_up = ranked[1][1][0] if len(ranked) > 1 else 0.0
+            if ranked[0][1][0] - runner_up >= _FUZZY_MARGIN:
+                found = {"code": ranked[0][0], "unit_conversion": ranked[0][1][1]}
+    if found is None or get_product(conn, found["code"]) is None:
+        return None
+    conversion = found["unit_conversion"] or 1.0
+    if conversion == 1.0:
+        conversion = suggest_wholesale_conversion(conn, found["code"], raw_unit_price)
+    return {"code": found["code"], "unit_conversion": conversion}
+
+
+def below_cost_overrides(conn: sqlite3.Connection, codes) -> list[dict]:
+    """Products among `codes` whose fixed wholesale-price exception is now BELOW
+    cost x bulk size (a cost rise from a supplier invoice can silently turn it
+    into a loss). Shown right after "Áp dụng giá mới", when the loss starts."""
+    out = []
+    for code in sorted(set(codes)):
+        product = get_product(conn, code)
+        if not product or not product["bulk_price_override"] or not product["bulk_qty"]:
+            continue
+        cost_total = product["cost_price"] * product["bulk_qty"]
+        if product["bulk_price_override"] < cost_total:
+            out.append({"code": code, "override": product["bulk_price_override"], "cost_total": cost_total})
+    return out
+
+
+# ---- Deleting a supplier invoice ----
+
+_DELETED_KEYS_META = "deleted_photo_keys"
+
+
+def _deleted_photo_keys(conn: sqlite3.Connection) -> set[str]:
+    row = conn.execute("SELECT value FROM shop_meta WHERE key = ?", (_DELETED_KEYS_META,)).fetchone()
+    return set(row[0].split("\n")) if row and row[0] else set()
+
+
+def delete_supplier_invoice(conn: sqlite3.Connection, invoice_id: int) -> None:
+    """Removes the invoice and its lines. Cost prices it already applied to the
+    catalog stay as they are (price_history keeps the record) -- only the
+    invoice itself goes. The photo/PDF file in data/supplier_invoices is NOT
+    deleted (real data). A Telegram-synced invoice's key is remembered, so the
+    next "Đồng bộ từ Telegram" does not bring the same photo back."""
+    row = conn.execute("SELECT source_key FROM supplier_invoices WHERE id = ?", (invoice_id,)).fetchone()
+    if row is None:
+        raise ValueError(f"no such supplier invoice: {invoice_id}")
+    source_key = row[0]
+    if source_key:
+        keys = _deleted_photo_keys(conn) | {source_key}
+        conn.execute(
+            "INSERT INTO shop_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (_DELETED_KEYS_META, "\n".join(sorted(keys))),
+        )
+    # nothing may keep pointing at the deleted invoice (foreign keys are enforced)
+    conn.execute("UPDATE invoices SET supplier_invoice_id = NULL WHERE supplier_invoice_id = ?", (invoice_id,))
+    conn.execute("UPDATE order_batches SET supplier_invoice_id = NULL WHERE supplier_invoice_id = ?", (invoice_id,))
+    conn.execute("DELETE FROM supplier_invoice_lines WHERE supplier_invoice_id = ?", (invoice_id,))
+    conn.execute("DELETE FROM supplier_invoices WHERE id = ?", (invoice_id,))
+    conn.commit()

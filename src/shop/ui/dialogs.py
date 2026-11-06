@@ -22,9 +22,11 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QSpinBox,
     QVBoxLayout,
 )
 
+from shop.core.pricing import PUBLIC_MARKUP_PCT, effective_bulk_price, unit_price
 from shop.core.products import gallery_list
 from shop.paths import site_repo_dir
 
@@ -191,6 +193,29 @@ class ProductDialog(QDialog):
         form.addRow("Nhóm hàng (website):", self.category_combo)
         form.addRow("Giá vốn:", self.cost_spin)
         form.addRow("Số lượng sỉ (0 = không có):", self.bulk_qty_spin)
+        # Giá sỉ ngoại lệ: mặc định giá sỉ = công thức (giá bán × số lượng sỉ × 0,98).
+        # Muốn giá khác cho riêng mặt hàng này thì tích "Thêm ngoại lệ" và gõ giá BÁN
+        # cả bao/thùng (cố định, mọi khách như nhau, không nhân markup riêng).
+        self.bulk_override_check = QCheckBox("Thêm ngoại lệ giá sỉ (giá bán cả bao/thùng)")
+        self.bulk_override_check.setChecked(bool(product and product.get("bulk_price_override")))
+        self.bulk_override_spin = QSpinBox()
+        self.bulk_override_spin.setRange(1, 10_000_000)
+        self.bulk_override_spin.setSuffix(" RUB / cả bao")
+        self.bulk_override_spin.setValue(int(product["bulk_price_override"]) if product and product.get("bulk_price_override") else 1)
+        self.bulk_override_hint = QLabel()
+        self.bulk_override_hint.setWordWrap(True)
+        for signal in (
+            self.bulk_override_check.toggled,
+            self.bulk_override_spin.valueChanged,
+            self.bulk_qty_spin.valueChanged,
+            self.cost_spin.valueChanged,
+        ):
+            signal.connect(self._refresh_bulk_override)
+        self.bulk_override_check.toggled.connect(self._prefill_bulk_override)
+        form.addRow("", self.bulk_override_check)
+        form.addRow("Giá sỉ ngoại lệ:", self.bulk_override_spin)
+        form.addRow("", self.bulk_override_hint)
+        self._refresh_bulk_override()
         form.addRow("Tên đơn vị đóng gói lớn:", self.bulk_unit_edit)
         form.addRow("Tên tiếng Nga:", self.name_ru_edit)
         form.addRow("Mô tả chi tiết:", self.description_edit)
@@ -317,6 +342,51 @@ class ProductDialog(QDialog):
         row exists, same reasoning as picked_image_path()."""
         return list(self._gallery_pending_add)
 
+    def _refresh_bulk_override(self, *_args):
+        bulk_qty = self.bulk_qty_spin.value()
+        usable = bulk_qty > 0
+        self.bulk_override_check.setEnabled(usable)
+        self.bulk_override_spin.setEnabled(usable and self.bulk_override_check.isChecked())
+        if not usable:
+            self.bulk_override_hint.setText("Cần nhập Số lượng sỉ trước thì mới đặt được giá sỉ riêng.")
+            return
+        price = unit_price(self.cost_spin.value(), PUBLIC_MARKUP_PCT)
+        formula = effective_bulk_price(price, bulk_qty)
+        text = f"Theo công thức (giá web {PUBLIC_MARKUP_PCT}%): {formula:,} RUB cả bao/thùng.".replace(",", ".")
+        if self.bulk_override_check.isChecked():
+            cost_total = self.cost_spin.value() * bulk_qty
+            if self.bulk_override_spin.value() < cost_total:
+                text += f" ⚠ Giá ngoại lệ đang THẤP HƠN giá vốn cả bao ({cost_total:,.0f} RUB) — bán lỗ.".replace(",", ".")
+            if self.bulk_override_spin.value() > price * bulk_qty:
+                text += " Lưu ý: cao hơn giá lẻ × số lượng nên thực tế vẫn tính theo giá lẻ."
+        self.bulk_override_hint.setText(text)
+
+    def _prefill_bulk_override(self, checked: bool):
+        """Ticking "Thêm ngoại lệ" starts from the formula's price, never from a
+        meaningless 1 RUB that one stray OK click could save."""
+        if checked and self.bulk_qty_spin.value() > 0 and self.bulk_override_spin.value() <= 1:
+            price = unit_price(self.cost_spin.value(), PUBLIC_MARKUP_PCT)
+            self.bulk_override_spin.setValue(max(1, effective_bulk_price(price, self.bulk_qty_spin.value())))
+
+    def accept(self):
+        value = self.bulk_override_value()
+        cost_total = self.cost_spin.value() * self.bulk_qty_spin.value()
+        if value is not None and value < cost_total:
+            message = (
+                f"Giá sỉ ngoại lệ {value:,} RUB thấp hơn giá vốn cả bao/thùng ({cost_total:,.0f} RUB) — bán lỗ.\n\n"
+                "Vẫn lưu?"
+            ).replace(",", ".")
+            answer = QMessageBox.question(self, "Giá sỉ thấp hơn giá vốn", message)
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        super().accept()
+
+    def bulk_override_value(self) -> int | None:
+        """The fixed whole-bag sale price the owner typed, or None (= use the formula)."""
+        if self.bulk_qty_spin.value() > 0 and self.bulk_override_check.isChecked():
+            return self.bulk_override_spin.value()
+        return None
+
     def gallery_removals(self) -> list[str]:
         """Existing gallery filenames marked for removal this session."""
         return list(self._gallery_pending_remove)
@@ -358,6 +428,11 @@ class CustomerDialog(QDialog):
         form.addRow("Địa chỉ:", self.address_edit)
         form.addRow("Liên hệ (SĐT/Telegram):", self.contact_edit)
         form.addRow("% markup mặc định:", self.markup_spin)
+        self.internal_check = QCheckBox("Dùng nội bộ (chính tôi): giá gốc, không tính công nợ/lợi nhuận")
+        self.internal_check.setChecked(bool(customer and customer.get("internal")))
+        self.internal_check.toggled.connect(self._on_internal_toggled)
+        form.addRow("", self.internal_check)
+        self._on_internal_toggled(self.internal_check.isChecked())
         form.addRow("Công nợ đầu kỳ:", self.opening_balance_spin)
 
         buttons = _ok_cancel(self, self.accept)
@@ -366,8 +441,16 @@ class CustomerDialog(QDialog):
         layout.addLayout(form)
         layout.addWidget(buttons)
 
+    def _on_internal_toggled(self, checked: bool):
+        # Internal use = cost price: markup 0 flows into every invoice
+        # (invoice editor, online-order conversion) with no other change.
+        if checked:
+            self.markup_spin.setValue(0)
+        self.markup_spin.setEnabled(not checked)
+
     def values(self) -> dict:
         return {
+            "internal": int(self.internal_check.isChecked()),
             "name": self.name_edit.text().strip(),
             "address": self.address_edit.text().strip() or None,
             "contact": self.contact_edit.text().strip() or None,
@@ -377,9 +460,13 @@ class CustomerDialog(QDialog):
 
 
 class PaymentDialog(QDialog):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, unpaid: list[dict] | None = None, debt: int | None = None):
+        """`unpaid` = shop.core.summary.unpaid_invoices(): tick the invoices the customer
+        is paying and the amount fills itself in (no odd numbers to type)."""
         super().__init__(parent)
         self.setWindowTitle("Ghi nhận thanh toán")
+        self._unpaid = unpaid or []
+        self._debt = debt
 
         self.amount_spin = QDoubleSpinBox()
         self.amount_spin.setRange(0, 100_000_000)
@@ -398,8 +485,38 @@ class PaymentDialog(QDialog):
         buttons = _ok_cancel(self, self.accept)
 
         layout = QVBoxLayout(self)
+        if self._unpaid:
+            layout.addWidget(QLabel("Khách trả cho hóa đơn nào? Tích chọn — số tiền tự điền:"))
+            self.invoice_list = QListWidget()
+            for u in self._unpaid:
+                text = f"#{u['id']} · {u['invoice_date']} · còn {u['remaining']:,} ₽".replace(",", ".")
+                if u["remaining"] != u["total"]:
+                    text += f" (hóa đơn {u['total']:,} ₽, đã trả một phần)".replace(",", ".")
+                item = QListWidgetItem(text)
+                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                item.setCheckState(Qt.CheckState.Unchecked)
+                item.setData(Qt.ItemDataRole.UserRole, (u["id"], u["remaining"]))
+                self.invoice_list.addItem(item)
+            self.invoice_list.itemChanged.connect(self._on_invoice_ticked)
+            layout.addWidget(self.invoice_list)
+        if self._debt:
+            pay_all_btn = QPushButton(f"Trả hết công nợ ({self._debt:,} ₽)".replace(",", "."))
+            pay_all_btn.clicked.connect(lambda: self.amount_spin.setValue(self._debt))
+            layout.addWidget(pay_all_btn)
         layout.addLayout(form)
         layout.addWidget(buttons)
+
+    def _on_invoice_ticked(self, _item):
+        ticked = [
+            item.data(Qt.ItemDataRole.UserRole)
+            for item in (self.invoice_list.item(i) for i in range(self.invoice_list.count()))
+            if item.checkState() == Qt.CheckState.Checked
+        ]
+        self.amount_spin.setValue(sum(remaining for _id, remaining in ticked))
+        if ticked:
+            self.note_edit.setText("Thanh toán hóa đơn " + ", ".join(f"#{invoice_id}" for invoice_id, _r in ticked))
+        elif self.note_edit.text().startswith("Thanh toán hóa đơn "):
+            self.note_edit.clear()
 
     def values(self) -> dict:
         return {

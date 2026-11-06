@@ -19,7 +19,22 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from shop.core.arrival_notify import NotifyError, send_arrival_notifications
+from datetime import date
+
+from shop.core.channel_announce import (
+    AnnounceError,
+    build_arrival_post,
+    default_batch_name,
+    default_deadline,
+    post_channel_text,
+)
+
+from shop.core.arrival_notify import (
+    NotifyError,
+    prepare_pickup_reminders,
+    send_arrival_notifications,
+    send_pickup_reminders,
+)
 from shop.core.customers import list_customers
 from shop.core.online_orders import (
     SyncError,
@@ -90,6 +105,12 @@ class OnlineOrdersPage(QWidget):
         batch_row = QHBoxLayout()
         batch_row.addWidget(close_batch_btn)
         batch_row.addWidget(review_batch_btn)
+        remind_btn = QPushButton("⏰ Nhắc khách chưa nhận hàng…")
+        remind_btn.setToolTip(
+            "Gửi nhắc cho khách đã được báo hàng về từ 1 ngày trở lên mà chưa có hóa đơn (chưa tới nhận)."
+        )
+        remind_btn.clicked.connect(self.remind_pickup)
+        batch_row.addWidget(remind_btn)
         batch_row.addStretch()
 
         self.table = QTableWidget(0, len(HEADERS))
@@ -136,6 +157,37 @@ class OnlineOrdersPage(QWidget):
         if row < 0 or row >= len(self._orders):
             return None
         return self._orders[row]
+
+    def remind_pickup(self):
+        pending = prepare_pickup_reminders(self.conn)
+        if not pending:
+            QMessageBox.information(
+                self, "Không có ai cần nhắc",
+                "Không có khách nào được báo hàng về từ 1 ngày trở lên mà vẫn chưa có hóa đơn.",
+            )
+            return
+        names = "\n".join(f"- {m['customer_label']}" for m in pending)
+        confirm = QMessageBox.question(
+            self, "Nhắc khách?",
+            f"Sẽ gửi tin nhắc tới {len(pending)} khách chưa tới nhận hàng:\n{names}\n\n"
+            "KHÔNG thể thu hồi sau khi gửi. Gửi ngay?",
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        worker_url, sync_secret = bot_sync_settings()
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            result = send_pickup_reminders(self.conn, worker_url, sync_secret)
+        except NotifyError as e:
+            QMessageBox.warning(self, "Không gửi được", str(e))
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
+        msg = f"Đã gửi {len(result['sent'])} tin nhắc."
+        if result["failed"]:
+            fails = "\n".join(f"- {f['customer_label']}: {f['error']}" for f in result["failed"])
+            msg += f"\n\n{len(result['failed'])} khách gửi KHÔNG thành công, cần tự liên hệ:\n{fails}"
+        QMessageBox.information(self, "Đã gửi", msg)
 
     def sync_now(self):
         worker_url, sync_secret = bot_sync_settings()
@@ -336,6 +388,30 @@ class OnlineOrdersPage(QWidget):
         self.refresh()
 
 
+def _ask_channel_post(parent, default_text: str) -> tuple[str, bool]:
+    """Editable draft of the channel post: the owner can change the batch name,
+    deadline, contacts or any sentence before it goes out."""
+    dialog = QDialog(parent)
+    dialog.setWindowTitle("Đăng thông báo lên kênh")
+    dialog.resize(560, 320)
+    hint = QLabel("Dòng đầu sẽ in đậm. Sửa tên đợt, hạn nhận, người liên hệ... rồi bấm \"Đăng lên kênh\".")
+    hint.setWordWrap(True)
+    editor = QTextEdit()
+    editor.setAcceptRichText(False)
+    editor.setPlainText(default_text)
+    buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+    buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Đăng lên kênh")
+    buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Hủy")
+    buttons.accepted.connect(dialog.accept)
+    buttons.rejected.connect(dialog.reject)
+    layout = QVBoxLayout(dialog)
+    layout.addWidget(hint)
+    layout.addWidget(editor)
+    layout.addWidget(buttons)
+    accepted = bool(dialog.exec())
+    return editor.toPlainText(), accepted
+
+
 class BatchReviewDialog(QDialog):
     """Lets the owner strike an item the supplier doesn't have from
     every pending order in a batch at once (request #1), instead of
@@ -383,6 +459,11 @@ class BatchReviewDialog(QDialog):
         unlink_invoice_btn.clicked.connect(self._unlink_invoice)
         notify_btn = QPushButton("📨 Kiểm tra & gửi thông báo khách hàng…")
         notify_btn.clicked.connect(self._check_and_notify)
+        channel_btn = QPushButton("📢 Đăng thông báo \"đơn đã về\" lên kênh…")
+        channel_btn.setToolTip(
+            "Soạn sẵn bài \"Đơn … đã về!!!\" theo mẫu quen thuộc, cho bạn sửa tên đợt/hạn nhận trước khi đăng lên kênh công khai."
+        )
+        channel_btn.clicked.connect(self._post_to_channel)
 
         invoice_buttons = QHBoxLayout()
         invoice_buttons.addWidget(link_invoice_btn)
@@ -406,9 +487,32 @@ class BatchReviewDialog(QDialog):
         layout.addWidget(self.invoices_list)
         layout.addLayout(invoice_buttons)
         layout.addWidget(notify_btn)
+        layout.addWidget(channel_btn)
         layout.addWidget(close_btn)
 
         self.refresh()
+
+    def _post_to_channel(self):
+        today = date.today()
+        text, ok = _ask_channel_post(self, build_arrival_post(default_batch_name(today), default_deadline(today)))
+        if not ok or not text.strip():
+            return
+        confirm = QMessageBox.question(
+            self, "Đăng lên kênh?",
+            "Bài này sẽ hiện CÔNG KHAI trên kênh \"Đồ khô Bách Khoa\" và KHÔNG thể thu hồi từ app. Đăng ngay?",
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        worker_url, sync_secret = bot_sync_settings()
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            post_channel_text(worker_url, sync_secret, text.strip())
+        except AnnounceError as e:
+            QMessageBox.warning(self, "Không đăng được", str(e))
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
+        QMessageBox.information(self, "Đã đăng", "Đã đăng thông báo lên kênh.")
 
     def refresh(self):
         self._demand = batch_demand_by_code(self.conn, self.batch_id)

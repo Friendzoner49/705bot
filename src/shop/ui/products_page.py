@@ -20,6 +20,7 @@ from shop.core.products import (
     list_categories,
     list_products,
     set_active,
+    set_bulk_price_override,
     set_description,
     set_image_filename,
     set_in_stock,
@@ -139,7 +140,7 @@ class ProductsPage(QWidget):
                 p["unit"] or "",
                 p["category"] or "",
                 f"{p['cost_price']:.2f}",
-                f"{p['bulk_qty']:g}" if p["bulk_qty"] else "",
+                (f"{p['bulk_qty']:g}" + (" (giá riêng)" if p["bulk_price_override"] else "")) if p["bulk_qty"] else "",
                 p["sale_until"] or "",
                 status,
             ]
@@ -190,6 +191,7 @@ class ProductsPage(QWidget):
                 QMessageBox.warning(self, "Mã hàng đã tồn tại", f"Mã '{values['code']}' đã có trong danh mục. Chọn 'Sửa' để thay đổi mặt hàng đó.")
                 return
             upsert_product(self.conn, **values)
+            set_bulk_price_override(self.conn, values["code"], dialog.bulk_override_value())
             set_sale_until(self.conn, values["code"], dialog.sale_until_value())
             set_description(self.conn, values["code"], dialog.description_value())
             self._apply_dialog_image(dialog, values["code"])
@@ -211,6 +213,7 @@ class ProductsPage(QWidget):
             values["active"] = product["active"]
             values["in_stock"] = product["in_stock"]
             upsert_product(self.conn, **values)
+            set_bulk_price_override(self.conn, code, dialog.bulk_override_value())
             set_sale_until(self.conn, code, dialog.sale_until_value())
             set_description(self.conn, code, dialog.description_value())
             self._apply_dialog_image(dialog, code)

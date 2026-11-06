@@ -76,13 +76,22 @@ def _resync_bulk_discount(conn: sqlite3.Connection, invoice_id: int, main_line_i
     existing = conn.execute(
         "SELECT id FROM invoice_lines WHERE invoice_id = ? AND note = ?", (invoice_id, note_tag)
     ).fetchone()
-    discount = calc_bulk_discount(unit_price_value, qty, product["bulk_qty"])
+    # The owner's own purchases ("Dùng nội bộ") are billed at plain cost:
+    # no bag discount, neither the formula's 2% nor a fixed exception.
+    internal = conn.execute(
+        "SELECT c.internal FROM invoices i JOIN customers c ON c.id = i.customer_id WHERE i.id = ?", (invoice_id,)
+    ).fetchone()
+    if internal and internal[0]:
+        discount = 0
+    else:
+        discount = calc_bulk_discount(unit_price_value, qty, product["bulk_qty"], product.get("bulk_price_override"))
     if discount <= 0:
         if existing:
             conn.execute("DELETE FROM invoice_lines WHERE id = ?", (existing[0],))
             conn.commit()
         return
-    name = f"Chiết khấu sỉ 2% — {product['name']} ({qty:g}{' ' + product['unit'] if product['unit'] else ''})"
+    label = "Chiết khấu sỉ" if product.get("bulk_price_override") else "Chiết khấu sỉ 2%"
+    name = f"{label} — {product['name']} ({qty:g}{' ' + product['unit'] if product['unit'] else ''})"
     if existing:
         conn.execute(
             "UPDATE invoice_lines SET product_name_snapshot = ?, unit_price = ?, line_total = ? WHERE id = ?",

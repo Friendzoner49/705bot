@@ -21,7 +21,7 @@ def export_summary(conn: sqlite3.Connection, out_path: Path, date_from: str | No
     for cell in ws[1]:
         cell.font = Font(bold=True)
 
-    for c in list_customers(conn, active_only=False):
+    for c in (c for c in list_customers(conn, active_only=False) if not c["internal"]):
         debt = customer_debt(conn, c["id"])
         profit = customer_profit(conn, c["id"], date_from, date_to)
         ws.append([c["name"], debt, profit])

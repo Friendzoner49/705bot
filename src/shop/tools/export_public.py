@@ -15,7 +15,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from shop.core.pricing import PUBLIC_MARKUP_PCT, bulk_price, unit_price
+from shop.core.pricing import PUBLIC_MARKUP_PCT, effective_bulk_price, unit_price
 from shop.core.products import gallery_list, list_products
 from shop.db.migrate import connect
 from shop.paths import repo_root, site_repo_dir
@@ -75,7 +75,7 @@ def build_payload(conn: sqlite3.Connection) -> dict:
             entry["sale_until"] = p["sale_until"]
         if p["bulk_qty"]:
             entry["bulk_qty"] = p["bulk_qty"]
-            entry["bulk_price"] = bulk_price(price, p["bulk_qty"])
+            entry["bulk_price"] = effective_bulk_price(price, p["bulk_qty"], p["bulk_price_override"])
         items.append(entry)
 
     return {

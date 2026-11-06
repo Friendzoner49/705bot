@@ -44,7 +44,18 @@ def bulk_price(unit_price_value, bulk_qty) -> int:
     return round_rub(_d(unit_price_value) * _d(bulk_qty) * BULK_DISCOUNT_FACTOR)
 
 
-def bulk_discount(unit_price_value, qty, bulk_qty) -> int:
+def effective_bulk_price(unit_price_value, bulk_qty, override=None) -> int:
+    """Price of ONE whole bulk pack. The owner's fixed exception when set,
+    otherwise the formula -- and never above the plain price of the same
+    quantity (a low-markup customer must not pay more for the bag than for
+    loose units)."""
+    formula = bulk_price(unit_price_value, bulk_qty)
+    if not override:
+        return formula
+    return min(int(override), line_total(unit_price_value, bulk_qty))
+
+
+def bulk_discount(unit_price_value, qty, bulk_qty, override=None) -> int:
     """How much to knock off a line's plain total (unit_price_value * qty)
     for every COMPLETE bulk-quantity tier ("1 thùng/bao") qty contains,
     so the invoiced total matches what the public price list advertises
@@ -74,5 +85,7 @@ def bulk_discount(unit_price_value, qty, bulk_qty) -> int:
     full_tiers = int(qty_d // bulk_qty_d)
     remainder = qty_d - (full_tiers * bulk_qty_d)
     plain_total = line_total(unit_price_value, qty)
-    discounted_total = full_tiers * bulk_price(unit_price_value, bulk_qty) + line_total(unit_price_value, remainder)
+    discounted_total = full_tiers * effective_bulk_price(unit_price_value, bulk_qty, override) + line_total(
+        unit_price_value, remainder
+    )
     return plain_total - discounted_total

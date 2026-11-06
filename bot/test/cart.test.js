@@ -73,3 +73,11 @@ test("lineTotal applies the sỉ rate per complete tier, not to the whole qty", 
   // 2 full bao, no leftover.
   assert.equal(lineTotal(item, 9), 2620);
 });
+
+test("lineTotal uses the published bulk_price (owner's exception) per whole pack, formula when absent", () => {
+  const withException = { code: "G", price: 300, bulk_qty: 5, bulk_price: 1300 };
+  assert.equal(lineTotal(withException, 5), 1300);
+  assert.equal(lineTotal(withException, 6), 1300 + 300); // leftover kg at the plain rate
+  const noException = { code: "G", price: 300, bulk_qty: 5 };
+  assert.equal(lineTotal(noException, 5), 1470); // formula fallback (old catalogs)
+});

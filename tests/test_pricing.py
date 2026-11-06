@@ -79,3 +79,17 @@ def test_bulk_discount_matches_the_gao001_whole_bag_plus_loose_kg_example():
     # 2 full bao (9kg), no leftover -> exactly 2 x 1310.
     discount_2_bao = bulk_discount(price, 9, bulk_qty)
     assert line_total(price, 9) - discount_2_bao == 2620
+
+
+def test_bulk_price_override_is_used_clamped_and_optional():
+    from shop.core.pricing import bulk_discount, effective_bulk_price
+
+    # 5kg bag, retail 300/kg: formula 0.98 x 1500 = 1470; the owner's exception wins
+    assert effective_bulk_price(300, 5) == 1470
+    assert effective_bulk_price(300, 5, 1300) == 1300
+    assert effective_bulk_price(300, 5, None) == 1470
+    # never above the plain price of the same quantity (low-markup customer: 250/kg -> 1250)
+    assert effective_bulk_price(250, 5, 1300) == 1250
+    # discount line = plain total - bag price
+    assert bulk_discount(300, 5, 5, 1300) == 1500 - 1300
+    assert bulk_discount(300, 6, 5, 1300) == 1800 - (1300 + 300)

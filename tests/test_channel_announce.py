@@ -141,3 +141,21 @@ def test_announce_product_wraps_a_non_json_response_instead_of_crashing(conn, mo
     monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=None: _PlainTextResponse())
     with pytest.raises(AnnounceError):
         announce_product(conn, code, "https://example.test", "secret", tmp_path)
+
+
+def test_arrival_post_matches_the_owners_template():
+    from datetime import date
+
+    from shop.core.channel_announce import build_arrival_post, default_batch_name, default_deadline
+
+    assert default_batch_name(date(2026, 6, 3)) == "đầu tháng 6"
+    assert default_batch_name(date(2026, 6, 15)) == "giữa tháng 6"
+    assert default_batch_name(date(2026, 6, 28)) == "cuối tháng 6"
+    assert default_deadline(date(2026, 6, 3)) == "23h59 5/6/2026"
+    text = build_arrival_post("đầu tháng 6", "23h59 17/6/2026")
+    assert text == (
+        "Đơn đầu tháng 6 đã về!!!\n"
+        "Ai có nhu cầu lấy liên hệ Hùng, Giang để nhận tại 705, hạn đến 23h59 17/6/2026. "
+        "Bắt đầu nhận đơn từ bây giờ, đồ sẽ có trong 1-2 tuần tới.\n"
+        "Trân trọng."
+    )

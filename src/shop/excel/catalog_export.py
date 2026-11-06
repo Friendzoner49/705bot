@@ -9,7 +9,7 @@ from pathlib import Path
 from openpyxl import Workbook
 from openpyxl.utils import get_column_letter
 
-from shop.core.pricing import PUBLIC_MARKUP_PCT, bulk_price, unit_price
+from shop.core.pricing import PUBLIC_MARKUP_PCT, effective_bulk_price, unit_price
 from shop.core.products import list_products
 
 HEADERS = ["ID", "TÊN MẶT HÀNG", "ĐƠN VỊ", "ĐƠN GIÁ GỐC", "ĐƠN GIÁ", "SLL", "GIÁ SLL", "TRẠNG THÁI"]
@@ -23,7 +23,7 @@ def export_catalog(conn: sqlite3.Connection, out_path: Path, markup_pct=PUBLIC_M
 
     for p in list_products(conn, active_only=False):
         price = unit_price(p["cost_price"], markup_pct)
-        bulk = bulk_price(price, p["bulk_qty"]) if p["bulk_qty"] else 0
+        bulk = effective_bulk_price(price, p["bulk_qty"], p["bulk_price_override"]) if p["bulk_qty"] else 0
         ws.append([
             p["code"],
             p["name"],

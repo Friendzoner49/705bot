@@ -1021,3 +1021,93 @@ test("POST /notify/arrival relays each message and reports per-chat results", as
   assert.equal(sent[0].body.chat_id, "111");
   assert.match(sent[0].body.text, /Bún khô/);
 });
+
+// ---- "/hangve" with a PDF scan: stored raw, served by /sync/photo-blob, image posted back via /hangve/reply ----
+
+function pdfUpdate(chatId, caption) {
+  return telegramUpdate({
+    message: {
+      message_id: 77,
+      chat: { id: chatId, type: "supergroup" },
+      from: { id: chatId },
+      date: 1_761_000_900,
+      caption,
+      document: { file_id: "pdf1", file_unique_id: "p1", mime_type: "application/pdf" },
+    },
+  });
+}
+
+test("/hangve with a PDF is accepted, kept as raw bytes, and the group is told the sharp image comes after app sync", async (t) => {
+  const calls = [];
+  const pdfBytes = new Uint8Array([0x25, 0x50, 0x44, 0x46, 1, 2, 3]);
+  t.mock.method(
+    globalThis,
+    "fetch",
+    stubFetch(calls, { getFile: { result: { file_path: "d.pdf" } }, downloadFile: { bytes: pdfBytes } }),
+  );
+  const env = makeEnv({ SUPPLIER_GROUP_CHAT_ID: "555", SYNC_SECRET: "sync-secret" });
+
+  await post(env, pdfUpdate(555, "/hangve pdf test"));
+
+  assert.ok(calls.find((c) => c.method === "sendMessage").body.text.includes("PDF"));
+  const { photos } = await (await getSyncPhotos(env, "sync-secret")).json();
+  assert.equal(photos.length, 1);
+  assert.equal(photos[0].mime, "application/pdf");
+  assert.equal(photos[0].data, undefined); // no base64 -- raw blob instead
+  assert.equal(photos[0].reply_chat_id, "555");
+  assert.equal(photos[0].reply_to_message_id, 77);
+
+  const blobRes = await worker.fetch(
+    new Request(`https://example.test/sync/photo-blob?key=${encodeURIComponent(photos[0].blob)}`, {
+      headers: { "X-Sync-Secret": "sync-secret" },
+    }),
+    env,
+  );
+  assert.equal(blobRes.status, 200);
+  assert.deepEqual(new Uint8Array(await blobRes.arrayBuffer()), pdfBytes);
+});
+
+test("POST /hangve/reply only posts into the supplier group and needs the secret", async (t) => {
+  const calls = [];
+  t.mock.method(globalThis, "fetch", stubFetch(calls));
+  const env = makeEnv({ SUPPLIER_GROUP_CHAT_ID: "555", SYNC_SECRET: "sync-secret" });
+  const send = (secret, chatId) =>
+    worker.fetch(
+      new Request("https://example.test/hangve/reply", {
+        method: "POST",
+        headers: { "X-Sync-Secret": secret, "content-type": "application/json" },
+        body: JSON.stringify({ chat_id: chatId, imageBase64: btoa("png"), filename: "a.png", reply_to_message_id: 77 }),
+      }),
+      env,
+    );
+  assert.equal((await send("wrong", "555")).status, 403);
+  assert.equal((await send("sync-secret", "123")).status, 400); // some other chat: refused
+  assert.equal((await send("sync-secret", "555")).status, 200);
+  const doc = calls.find((c) => c.method === "sendDocument");
+  assert.equal(doc.body.chat_id, "555");
+  assert.equal(doc.body.reply_to_message_id, "77");
+});
+
+// ---- POST /channel/text: text-only channel post, first line bold, HTML-escaped ----
+
+test("POST /channel/text posts the text to the channel with the first line bold and everything escaped", async (t) => {
+  const calls = [];
+  t.mock.method(globalThis, "fetch", stubFetch(calls));
+  const env = makeEnv({ CHANNEL_CHAT_ID: "-100123", SYNC_SECRET: "sync-secret" });
+  const send = (secret, body) =>
+    worker.fetch(
+      new Request("https://example.test/channel/text", {
+        method: "POST",
+        headers: { "X-Sync-Secret": secret, "content-type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+      env,
+    );
+  assert.equal((await send("wrong", { text: "hi" })).status, 403);
+  assert.equal((await send("sync-secret", { text: "   " })).status, 400);
+  assert.equal((await send("sync-secret", { text: "Đơn <b>x</b> đã về!!!\nTrân trọng & cảm ơn" })).status, 200);
+  const sent = calls.find((c) => c.method === "sendMessage");
+  assert.equal(sent.body.chat_id, "-100123");
+  assert.equal(sent.body.parse_mode, "HTML");
+  assert.equal(sent.body.text, "<b>Đơn &lt;b&gt;x&lt;/b&gt; đã về!!!</b>\nTrân trọng &amp; cảm ơn");
+});

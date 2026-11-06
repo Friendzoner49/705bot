@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
 
 from shop.core.customers import add_customer, delete_customer, get_customer, list_customers, update_customer
 from shop.core.payments import add_payment
-from shop.core.summary import customer_debt
+from shop.core.summary import customer_debt, unpaid_invoices
 from shop.ui.dialogs import CustomerDialog, PaymentDialog, PaymentsListDialog
 
 HEADERS = ["Tên khách hàng", "Địa chỉ", "Liên hệ", "% markup", "Công nợ hiện tại (RUB)", "Hoạt động"]
@@ -69,7 +69,7 @@ class CustomersPage(QWidget):
                 c["contact"] or "",
                 f"{c['default_markup_pct']:g}",
                 f"{debt:,}".replace(",", "."),
-                "Có" if c["active"] else "Không",
+                ("Có" if c["active"] else "Không") + (" · dùng nội bộ" if c["internal"] else ""),
             ]
             for col, value in enumerate(values):
                 self.table.setItem(row, col, QTableWidgetItem(str(value)))
@@ -133,7 +133,9 @@ class CustomersPage(QWidget):
         if customer_id is None:
             QMessageBox.information(self, "Chọn khách hàng", "Hãy chọn một khách hàng trước.")
             return
-        dialog = PaymentDialog(self)
+        dialog = PaymentDialog(
+            self, unpaid=unpaid_invoices(self.conn, customer_id), debt=max(customer_debt(self.conn, customer_id), 0)
+        )
         if dialog.exec():
             add_payment(self.conn, customer_id, **dialog.values())
             self.refresh()

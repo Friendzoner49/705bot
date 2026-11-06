@@ -45,7 +45,7 @@ class SummaryPage(QWidget):
         self.refresh()
 
     def refresh(self):
-        customers = list_customers(self.conn, active_only=False)
+        customers = [c for c in list_customers(self.conn, active_only=False) if not c["internal"]]
         self.table.setRowCount(len(customers))
         for row, c in enumerate(customers):
             debt = customer_debt(self.conn, c["id"])
